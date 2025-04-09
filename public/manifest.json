@@ -1,22 +1,22 @@
 {
+  "author": "Michael",
+  "name": "AbstractionAndInheritance",
+  "description": "Introduces OOP concepts.",
+  "enableOnMobile": true,
+  "repoUrl": "https://github.com/zmicha-code/AbstractionAndInheritance",
+  "id": "zmicha-AbstractionAndInheritance",
   "manifestVersion": 1,
-  "id": "plugin_template",
-  "name": "Plugin Template",
-  "author": "remnote",
-  "repoUrl": "",
   "version": {
     "major": 0,
     "minor": 0,
     "patch": 1
   },
-  "theme": [],
-  "enableOnMobile": false,
-  "description": "",
   "requestNative": false,
   "requiredScopes": [
     {
       "type": "All",
       "level": "Read"
     }
-  ]
+  ],
+  "unlisted": true
 }

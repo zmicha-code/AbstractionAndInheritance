@@ -2,6 +2,15 @@ import { declareIndexPlugin, ReactRNPlugin, WidgetLocation } from '@remnote/plug
 import '../style.css';
 import '../App.css';
 
+// RemNote (Ancestor) Tags:
+// "Tag"
+// "Rem With An Alias"
+// "Automatically Sort"
+// "Document"
+// "Highlight"
+
+// RemNote References:
+// "query:#<Rem>"
 async function onActivate(plugin: ReactRNPlugin) {
   // Register settings
   await plugin.settings.registerStringSetting({
@@ -31,11 +40,27 @@ async function onActivate(plugin: ReactRNPlugin) {
     },
   });
 
-  // Show a toast notification to the user.
-  await plugin.app.toast("I'm a toast!");
+  // New command: Display graph for the selected Rem
+  await plugin.app.registerCommand({
+    id: 'display-graph',
+    name: 'Display Graph for Selected Rem',
+    action: async () => {
+      const focusedRem = await plugin.focus.getFocusedRem();
+      if (focusedRem) {
+        await plugin.storage.setSession('selectedRemId', focusedRem._id);
+      } else {
+        await plugin.app.toast('No Rem is currently selected.');
+      }
+    },
+  });
 
   // Register a sidebar widget.
   await plugin.app.registerWidget('sample_widget', WidgetLocation.RightSidebar, {
+    dimensions: { height: 'auto', width: '100%' },
+  });
+
+  // Register a sidebar widget.
+  await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
   });
 }

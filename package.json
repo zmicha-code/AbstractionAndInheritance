@@ -10,11 +10,16 @@
   },
   "dependencies": {
     "@remnote/plugin-sdk": "latest",
+    "@xyflow/react": "^12.4.4",
+    "dagre": "^0.8.5",
+    "graphlib": "^2.1.8",
     "react": "^17.0.2",
-    "react-dom": "^17.0.2"
+    "react-dom": "^17.0.2",
+    "reactflow": "^11.11.4"
   },
   "devDependencies": {
     "@pmmmwh/react-refresh-webpack-plugin": "^0.5.7",
+    "@types/dagre": "^0.7.52",
     "@types/node": "^18.0.3",
     "@types/react": "^17.0.2",
     "@types/react-dom": "^17.0.2",
