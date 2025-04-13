@@ -15,7 +15,7 @@ export const FocusedRemNode = ({ data }: { data: NodeData }) => {
         padding: 5,
         backgroundColor: "#ffcc00", // Highlighted color for focused node
         color: "black",
-        border: "3px solid black",
+        border: "1px solid black",
         borderRadius: 5,
         whiteSpace: "normal",
         wordWrap: "break-word",
@@ -152,7 +152,7 @@ return (
   <div
     style={{
       padding: 5,
-      backgroundColor: "#3d6885",
+      backgroundColor: "#3380b8", // #3380b8
       color: "black",
       border: "1px solid #777",
       borderRadius: 5,
@@ -167,9 +167,62 @@ return (
     }}
   >
     <Handle type="target" position={Position.Left} id="left" />
+    <Handle type="source" position={Position.Left} id="left" />
     <div>{data.label}</div>
   </div>
 );
+};
+
+export const PropertyNodeRefQuestion = ({ data }: { data: NodeData }) => {
+  return (
+    <div
+      style={{
+        padding: 5,
+        backgroundColor: "#3d6885", // #3d6885
+        color: "black",
+        border: "1px solid #777",
+        borderRadius: 5,
+        whiteSpace: "normal",
+        wordWrap: "break-word",
+        width: data.width,
+        height: data.height,
+        display: 'flex', // Use Flexbox for centering
+        justifyContent: 'left', // Center horizontally
+        alignItems: 'center', // Center vertically
+        textAlign: 'center', // Additional text alignment
+      }}
+    >
+      <Handle type="target" position={Position.Left} id="left" />
+      <Handle type="target" position={Position.Right} id="right" />
+      <div>{data.label}</div>
+    </div>
+  );
+  };
+
+export const PropertyNodeRefAnswer = ({ data }: { data: NodeData }) => {
+  return (
+    <div
+      style={{
+        padding: 5,
+        backgroundColor: "#b56222",
+        color: "black",
+        border: "1px solid #777",
+        borderRadius: 5,
+        whiteSpace: "normal",
+        wordWrap: "break-word",
+        width: data.width,
+        height: data.height,
+        display: 'flex', // Use Flexbox for centering
+        justifyContent: 'left', // Center horizontally
+        alignItems: 'center', // Center vertically
+        textAlign: 'center', // Additional text alignment
+      }}
+    >
+      <Handle type="target" position={Position.Left} id="left" />
+      <Handle type="target" position={Position.Right} id="right" />
+      <div>{data.label}</div>
+    </div>
+  );
 };
 
 export const nodeTypes = {
@@ -179,4 +232,6 @@ export const nodeTypes = {
   child: ChildNode,
   property: PropertyNode,
   propertyQuestion: PropertyNodeQuestion,
+  propertyRefQuestion: PropertyNodeRefQuestion,
+  propertyRefAnswer: PropertyNodeRefAnswer
 };

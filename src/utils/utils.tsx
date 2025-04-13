@@ -1,10 +1,10 @@
-import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface } from "@remnote/plugin-sdk";
+import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, RemType } from "@remnote/plugin-sdk";
 
 import { NodeData } from "../components/Nodes";
 
 export const specialTags = ["Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight"];
 
-export const specialNames = ["query:", "query:#", "contains:"];
+export const specialNames = ["L_", "C_", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias"];
 
 // Map RemNote highlight colors to CSS colors
 export const highlightColorMap: { [key: string]: string } = {
@@ -156,7 +156,10 @@ export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<R
   const parentRem = await rem.getParentRem();
 
   // if parent rem is not referencing rem/layer then its also a parent
-  if (parentRem && filteredTags.lastIndexOf(parentRem) === -1 && !(await isReferencingRem(plugin, parentRem))) {
+  if (parentRem && 
+      filteredTags.lastIndexOf(parentRem) === -1 &&
+      !(await isReferencingRem(plugin, parentRem)) &&
+      (await parentRem.getType()) == RemType.CONCEPT) {
     filteredTags.push(parentRem);
   }
 
@@ -373,5 +376,25 @@ export function highestYPosition(
     return 0;
   } else {
     return Math.max(...yValues);
+  }
+}
+
+export function lowestYPosition(
+  nodesMap: Map<string, { rem: Rem; type: string; position: { x: number; y: number }; data: NodeData }>,
+  type?: string
+): number {
+  // Convert the Map's values (nodes) into an array
+  const nodesArray = Array.from(nodesMap.values());
+  
+  // Filter nodes by the specified type and extract their x positions
+  const yValues = nodesArray
+    //.filter(node => node.type === type)
+    .map(node => node.position.y);
+  
+  // If no nodes match the type, return null; otherwise, return the maximum x value
+  if (yValues.length === 0) {
+    return 0;
+  } else {
+    return Math.min(...yValues);
   }
 }

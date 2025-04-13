@@ -10,6 +10,8 @@ interface GraphComponentProps<T extends Node> {
   nodeTypes: NodeTypes;
   onNodesChange: OnNodesChange<T>;
   onEdgesChange: OnEdgesChange<Edge>;
+  onNodeClick: any;
+  onContextMenu: any;
 }
 
 // Update the component with typed props
@@ -19,25 +21,10 @@ export function GraphComponent<T extends Node>({
   nodeTypes,
   onNodesChange,
   onEdgesChange,
+  onNodeClick
 }: GraphComponentProps<T>) {
   const plugin = usePlugin();
   const { fitView } = useReactFlow();
-
-  // onNodeClick={handleNodeClick}
-  async function handleNodeClick<T extends Node>(_event: React.MouseEvent, node: T) {
-    try {
-        // const plugin = usePlugin(); // not allowed here
-        //await plugin.window.openRem((await plugin.rem.findOne(node.id)) as Rem);
-        const focusedRem = (await plugin.rem.findOne(node.id)) as Rem;
-        if (focusedRem) {
-          await plugin.storage.setSession('selectedRemId', focusedRem._id);
-        } else {
-          await plugin.app.toast('No Rem is currently selected.');
-        }
-    } catch (error) {
-        console.error("Error opening Rem:", error);
-    }
-  }
 
   useEffect(() => {
     if (nodes.length > 0) {
@@ -55,7 +42,7 @@ export function GraphComponent<T extends Node>({
       nodeTypes={nodeTypes}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
-      onNodeClick={handleNodeClick}
+      onNodeClick={onNodeClick}
     />
   );
 }
