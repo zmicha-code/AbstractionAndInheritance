@@ -1,10 +1,10 @@
-import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, RemType } from "@remnote/plugin-sdk";
+import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, RemType, REM_TYPE } from "@remnote/plugin-sdk";
 
 import { NodeData } from "../components/Nodes";
 
 export const specialTags = ["Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight"];
 
-export const specialNames = ["L_", "C_", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias"];
+export const specialNames = ["query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Definition", "Eigenschaften", "Status", "Aliases", "Bullet Icon"];
 
 // Map RemNote highlight colors to CSS colors
 export const highlightColorMap: { [key: string]: string } = {
@@ -97,70 +97,40 @@ export async function isRemProperty(plugin: RNPlugin, rem: Rem): Promise<boolean
   //return parentRem ? getRemText((await parentRem.remsBeingReferenced())[0]).trim() == "Eigenschaften" : false
 }
 
-/*
-export async function getImmediateParents(rem: Rem): Promise<Rem[]> {
-  const tags = await rem.getTagRems();
-  const parentRem = await rem.getParentRem();
-  const parents = tags;
-  if (parentRem) {
-    parents.push(parentRem);
-  }
-  return parents;
+export async function getTagParent(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
+
+    const tags = (await rem.getTagRems()).filter(async (tagRem: Rem) => !specialTags.includes(await getRemText(plugin, tagRem)));
+
+    return tags[0];
 }
 
-export async function isAncestor(ancestor: Rem, descendant: Rem, visited: Set<string> = new Set<string>()): Promise<boolean> {
-  if (visited.has(descendant._id)) {
-    return false; // Cycle detected
-  }
-  visited.add(descendant._id);
-
-  const parents = await getImmediateParents(descendant);
-
-  for (const parent of parents) {
-    if (parent._id === ancestor._id) {
-      return true; // Found the ancestor
-    }
-    if (await isAncestor(ancestor, parent, visited)) {
-      return true; // Ancestor found higher up
-    }
-  }
-  return false; // No path to ancestor
-}
-
-export async function getNextParents(rem: Rem): Promise<Rem[]> {
-  // Step 1: Collect all potential parents
-  const tags = await rem.getTagRems();
-  const filteredTags = tags.filter((tagRem: Rem) => !specialTags.includes(getRemText(tagRem)));
-  const parentRem = await rem.getParentRem();
-
-  if (parentRem && filteredTags.lastIndexOf(parentRem) === -1 && getRemText(parentRem) !== "") {
-    filteredTags.push(parentRem); // Add hierarchical parent if not already present and text is non-empty
-  }
-
-  const parents = filteredTags; // List of all potential parents
-
-  // Step 2: Filter out parents that are ancestors of any other parent in the list
-  const validParents = parents.filter(async (P) => {
-    return !(await Promise.all(
-      parents.map(async (Q) => Q._id !== P._id && await isAncestor(P, Q))
-    )).some(result => result);
-  });
-
-  return Promise.all(validParents);
-}
-  */
 export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 
   const tags = await rem.getTagRems();
   const filteredTags = tags.filter(async (tagRem: Rem) => !specialTags.includes(await getRemText(plugin, tagRem)));
   const parentRem = await rem.getParentRem();
 
-  // if parent rem is not referencing rem/layer then its also a parent
+  // Check parent Rem
   if (parentRem && 
-      filteredTags.lastIndexOf(parentRem) === -1 &&
-      !(await isReferencingRem(plugin, parentRem)) &&
-      (await parentRem.getType()) == RemType.CONCEPT) {
-    filteredTags.push(parentRem);
+      filteredTags.lastIndexOf(parentRem) === -1) {
+
+    const type = await parentRem.getType();
+    //console.log(await getRemText(plugin, parentRem) );
+    //console.log("Type:" + type)
+
+    //
+    if (type == RemType.CONCEPT)
+      filteredTags.push(parentRem);
+
+    //
+    if (await isReferencingRem(plugin, parentRem) || type == RemType.DESCRIPTOR) {
+      const pparentRemTags = (await parentRem.getTagRems()).filter(async (tagRem: Rem) => !specialTags.includes(await getRemText(plugin, tagRem)));
+
+      //console.log("Parent ("+ await getRemText(plugin, parentRem) + ") is referencing, and has base" + "[" + await getRemText(plugin, pparentRemTags[0]) + "]");
+
+      if (pparentRemTags.length > 0)
+        filteredTags.push(pparentRemTags[0]);
+    }
   }
 
   const parents = filteredTags;
@@ -359,6 +329,7 @@ export function highestXPosition(
   }
 }
 
+// 
 export function highestYPosition(
   nodesMap: Map<string, { rem: Rem; type: string; position: { x: number; y: number }; data: NodeData }>,
   type?: string

@@ -10,8 +10,10 @@ interface GraphComponentProps<T extends Node> {
   nodeTypes: NodeTypes;
   onNodesChange: OnNodesChange<T>;
   onEdgesChange: OnEdgesChange<Edge>;
-  onNodeClick: any;
-  onContextMenu: any;
+  //onNodeClick: any;
+  //onContextMenu: any;
+  onNodeClick?: (event: React.MouseEvent, node: T) => void;
+  onNodeContextMenu?: (event: React.MouseEvent, node: T) => void;
 }
 
 // Update the component with typed props
@@ -21,11 +23,13 @@ export function GraphComponent<T extends Node>({
   nodeTypes,
   onNodesChange,
   onEdgesChange,
-  onNodeClick
+  onNodeClick,
+  onNodeContextMenu
 }: GraphComponentProps<T>) {
   const plugin = usePlugin();
   const { fitView } = useReactFlow();
 
+  /*
   useEffect(() => {
     if (nodes.length > 0) {
       const timer = setTimeout(() => {
@@ -34,6 +38,7 @@ export function GraphComponent<T extends Node>({
       return () => clearTimeout(timer);
     }
   }, [nodes, fitView]);
+  */
 
   return (
     <ReactFlow
@@ -43,6 +48,7 @@ export function GraphComponent<T extends Node>({
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={onNodeClick}
+      onNodeContextMenu={onNodeContextMenu}
     />
   );
 }

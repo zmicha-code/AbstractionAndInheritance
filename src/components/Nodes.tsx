@@ -59,6 +59,8 @@ export const ParentNode = ({ data }: { data: NodeData }) => {
       <Handle type="target" position={Position.Top} id="top" />
       <Handle type="source" position={Position.Bottom} id="bottom" />
       <Handle type="target" position={Position.Left} id="left" />
+      <Handle type="source" position={Position.Right} id="right" />
+      <Handle type="target" position={Position.Right} id="right" />
       <div>{data.label}</div>
     </div>
   );
@@ -70,7 +72,7 @@ export const ChildNode = ({ data }: { data: NodeData }) => {
     <div
       style={{
         padding: 5,
-        backgroundColor: "#cccccc",
+        backgroundColor: "#437c52", // #437c52
         color: "black",
         border: "1px solid #777",
         borderRadius: 5,
@@ -204,7 +206,7 @@ export const PropertyNodeRefAnswer = ({ data }: { data: NodeData }) => {
     <div
       style={{
         padding: 5,
-        backgroundColor: "#b56222",
+        backgroundColor: "#3d6885", // #3d6885
         color: "black",
         border: "1px solid #777",
         borderRadius: 5,
@@ -225,6 +227,33 @@ export const PropertyNodeRefAnswer = ({ data }: { data: NodeData }) => {
   );
 };
 
+
+export const LayerNode = ({ data }: { data: NodeData }) => {
+  return (
+    <div
+      style={{
+        padding: 5,
+        backgroundColor: "#b53f22", // #b53f22
+        color: "black",
+        border: "1px solid #777",
+        borderRadius: 5,
+        whiteSpace: "normal",
+        wordWrap: "break-word",
+        width: data.width,
+        height: data.height,
+        display: 'flex', // Use Flexbox for centering
+        justifyContent: 'center', // Center horizontally
+        alignItems: 'center', // Center vertically
+        textAlign: 'center', // Additional text alignment
+      }}
+    >
+      <Handle type="target" position={Position.Left} id="left" />
+      <div>{data.label}</div>
+    </div>
+  );
+};
+
+
 export const nodeTypes = {
   focused: FocusedRemNode,
   parent: ParentNode,
@@ -233,5 +262,6 @@ export const nodeTypes = {
   property: PropertyNode,
   propertyQuestion: PropertyNodeQuestion,
   propertyRefQuestion: PropertyNodeRefQuestion,
-  propertyRefAnswer: PropertyNodeRefAnswer
+  propertyRefAnswer: PropertyNodeRefAnswer,
+  layer: LayerNode
 };
