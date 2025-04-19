@@ -2,12 +2,14 @@ import React, { useState, useEffect, useCallback } from "react";
 import { ReactFlow, Node, Edge, SmoothStepEdge, useReactFlow, ReactFlowProvider, Handle, Position, useNodesState, useEdgesState } from "@xyflow/react";
 import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RemType, Queue } from "@remnote/plugin-sdk";
 
-import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUSED_NODE_STYLE, calculateLines,
+import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUSED_NODE_STYLE,
           getRemText, getNextParents, referencesEigenschaften, isReferencingRem,
           isNextParent, isRemProperty, getNonReferencingParent, highestXPosition,
-          highestYPosition, calculateTextWidth, lowestYPosition,
+          highestYPosition, calcNodeHeight2, lowestYPosition,
           isAncestor,
-          getTagParent
+          getTagParent,
+          getNextChildren,
+          formatIfLayerConcept
 } from "../utils/utils";
 
 import { GraphComponent } from "../components/GraphComponent";
@@ -24,7 +26,7 @@ import {
 
 import "@xyflow/react/dist/style.css";
 
-const specialLayerNames = ["Eigenschaften", "Aliases", "query", "Status"];
+const specialLayerNames = ["Aliases", "query", "Status"];
 
 // Filter out special Rems
 async function filterSpecial(plugin: RNPlugin, rems: Rem[]) {
@@ -37,13 +39,8 @@ async function filterSpecial(plugin: RNPlugin, rems: Rem[]) {
   return rems.filter((_, index) => filterResults[index]);
 };
 
-function calcNodeHeight(txt: string, width: number) {
-  const lineHeight = 20;
-  return lineHeight * txt.length * 10 / width;
-}
-
 function calcNodeWidth(txt: string) {
-  return 175;
+  return 200;
 }
 
 // ### Graph Construction Functions
@@ -69,6 +66,8 @@ async function collectParents(
   let yOffset = yStart != 0 ? yStart : childPosition.y; // Offset
 
   let parents = await getNextParents(plugin, rem);
+
+  //console.log("Parents of " + await getRemText(plugin, rem) + ": " + parents.length);
 
   //
   // Filter out special Rems
@@ -96,13 +95,16 @@ async function collectParents(
 
   parents = removeDuplicateRems(parents);
 
+  //console.log("Actual Parents of " + await getRemText(plugin, rem) + ": " + parents.length);
+
   for (let i = 0; i < parents.length; i++) {
     const parent = parents[i];
 
+    // Add new node
     if (!nodesMap.has(parent._id)) {
-      const text = await getRemText(plugin, parent);
+      const text = await formatIfLayerConcept(plugin, parent); //await getRemText(plugin, parent);
       const nodeWidth = calcNodeWidth(text); // Example width150
-      const nodeHeight = Math.max(50, calcNodeHeight(text, nodeWidth) * 3); // Example height50
+      const nodeHeight = Math.max(60, calcNodeHeight2(text, nodeWidth)); // Example height50
       const x = childPosition.x + (i - (parents.length - 1) / 2) * (nodeWidth + spacing_x);
       const y = yOffset - nodeHeight - spacing_y;
       const position = { x, y };
@@ -121,7 +123,7 @@ async function collectParents(
         //  borderRadius: 100
         //}
       } as any);
-    } else {
+    } else { // Add additional edge
 
       // Define the edge ID
       const edgeId = `${parent._id}-${rem._id}`;
@@ -161,8 +163,8 @@ async function collectParentProperties(
   // Define constants for spacing and node dimensions
   const spacing_x = 150; // Horizontal spacing between parent and property nodes
   const spacing_y = 20;  // Vertical spacing between property nodes
-  const nodeWidth = 150; // Width of each node
-  const nodeHeight = 25; // Height of each node
+  const nodeWidth = 300; // Width of each node
+  const avgNodeHeight = 30; // Height of each node
 
   if(!currentRem) return;
 
@@ -208,7 +210,7 @@ async function collectParentProperties(
       children.map(async child => {
         const type = await child.getType();
         const text = await getRemText(plugin, child);
-        return (type === RemType.DESCRIPTOR || await isReferencingRem(plugin, child) ? child : null) ; // && !specialLayerNames.some(name => text.includes(name)) ? child : null
+        return (type === RemType.DESCRIPTOR ? child : null) ; // || await isReferencingRem(plugin, child) && !specialLayerNames.some(name => text.includes(name)) ? child : null
       })
     );
 
@@ -220,7 +222,7 @@ async function collectParentProperties(
     const totalNodesToAdd = allProperties.length + descriptors.length;
 
     // Calculate total height required
-    const totalHeightRequired = (totalNodesToAdd) * (nodeHeight + spacing_y);
+    const totalHeightRequired = (totalNodesToAdd) * (avgNodeHeight + spacing_y);
 
     // Adjust parent position if necessary
     // Center the parent vertically among its nodes by shifting it up by half the total height
@@ -238,8 +240,8 @@ async function collectParentProperties(
     for (const propertyRem of allProperties) {
       if (!nodesMap.has(propertyRem._id)) {
         const text = await getRemText(plugin, propertyRem);
-        const data = { label: text, width: nodeWidth, height: nodeHeight };
-        const position = { x: parentPosition.x + nodeWidth + spacing_x, y: currentY };
+        const data = { label: text, width: nodeWidth, height: calcNodeHeight2(text, nodeWidth) };
+        const position = { x: parentPosition.x + nodeWidth, y: currentY };
 
         nodesMap.set(propertyRem._id, {
           rem: propertyRem,
@@ -257,7 +259,7 @@ async function collectParentProperties(
           targetHandle: "left"
         });
 
-        currentY += nodeHeight + spacing_y;
+        currentY += avgNodeHeight + spacing_y;
       }
     }
 
@@ -265,7 +267,7 @@ async function collectParentProperties(
     for (const descriptor of descriptors) {
       if (!nodesMap.has(descriptor._id)) {
         const text = await getRemText(plugin, descriptor);
-        const data = { label: text, width: nodeWidth, height: nodeHeight };
+        const data = { label: text, width: nodeWidth, height: avgNodeHeight };
         const position = { x: parentPosition.x + nodeWidth + spacing_x, y: currentY };
 
         nodesMap.set(descriptor._id, {
@@ -284,12 +286,13 @@ async function collectParentProperties(
           targetHandle: "left"
         });
 
-        currentY += nodeHeight + spacing_y;
+        currentY += avgNodeHeight + spacing_y;
       }
     }
   }
 }
 
+// If current Rem is child of a descriptor show the parent concept to the left
 async function collectEnvironment(
   plugin: RNPlugin,
   currentRem: Rem | undefined,
@@ -302,7 +305,7 @@ async function collectEnvironment(
   const spacing_x = 120;
   const spacing_y = 120;
 
-  if(!currentRem) return;
+  if(!currentRem) return; //|| await (await currentRem.getParentRem())?.getType() != RemType.DESCRIPTOR
 
   // Get all parent nodes from nodesMap (mimicking collectParentProperties)
   // include currentRem to show its environment too
@@ -317,64 +320,46 @@ async function collectEnvironment(
     let ancestor = await parentRem.getParentRem();
     let edgeLabel = "";
     let index = -1; // To adjust vertical positioning for multiple ancestors
+    
+    // Sorry this is a mess
+    let alignLeft = (await isAncestor(plugin, parentRem, currentRem) || parentRem == currentRem) && !((await currentRem.getCards()).length > 0);
 
-    while (ancestor) {
-      const ancestorType = await ancestor.getType();
-      const isReferencing = await isReferencingRem(plugin, ancestor);
+    if(ancestor && (await ancestor.getType()) == RemType.DESCRIPTOR) {
+      const nextAncestor = await ancestor.getParentRem();
 
-      //
-      let alignLeft = await isAncestor(plugin, parentRem, currentRem) || parentRem == currentRem;
+      if(nextAncestor && (await nextAncestor.getType() == RemType.CONCEPT)) {
 
-      // Add only non-referencing concept ancestors as "parentProperty" nodes
-      if ((!isReferencing && ancestorType === RemType.CONCEPT)) { // 
-        if (parentRem != currentRem || (!nodesMap.has(ancestor._id) && parentRem == currentRem)) { // !nodesMap.has(ancestor._id)
-          // Position to the left of the parent, stacking vertically
-          const position = {
-            //x: parentPosition.x - (nodeWidth + spacing_x),
-            x: alignLeft ? parentPosition.x - (nodeWidth + spacing_x) : parentPosition.x + (nodeWidth * 2 + spacing_x) - nodeWidth,
-            y: parentPosition.y + (index * (nodeHeight + spacing_y))
-          };
-          const label = await getRemText(plugin, ancestor);
-          const data = { label, width: nodeWidth, height: nodeHeight };
+        edgeLabel = await getRemText(plugin, ancestor);
 
-          nodesMap.set(ancestor._id, {
-            rem: ancestor,
+        // Position to the left of the parent, stacking vertically
+        const position = {
+          //x: parentPosition.x - (nodeWidth + spacing_x),
+          x: alignLeft ? parentPosition.x - (nodeWidth + spacing_x) : parentPosition.x + (nodeWidth * 2 + spacing_x) - nodeWidth,
+          y: parentPosition.y + (index * (nodeHeight + spacing_y))
+        };
+        const label = await getRemText(plugin, nextAncestor);
+        const data = { label, width: nodeWidth, height: nodeHeight };
+
+        if (!nodesMap.has(nextAncestor._id)) {
+          nodesMap.set(nextAncestor._id, {
+            rem: nextAncestor,
             type: "parentProperty",
             position,
             data
           });
-
-          // Add edge from ancestor to parent
-          edges.add({
-            id: `${ancestor._id}-${parentRem._id}`,
-            source: ancestor._id,
-            target: parentRem._id,
-            label: edgeLabel,
-            type: "smoothstep",
-            sourceHandle: "bottom",
-            targetHandle: alignLeft? "left" : "right"
-          });
         }
-        //index--; // Increment for next ancestor
-        break;
-      } else {
-        
-        // secondary base found which is identical to primary base
-        //if (isReferencing || ancestorType == RemType.DESCRIPTOR) {
-        //  const tagParent = await getTagParent(plugin, ancestor);
-        //  if (tagParent && await isAncestor(plugin, tagParent, currentRem))
-        //    break;
-        //}
 
-        if(alignLeft)
-          edgeLabel == "" ? edgeLabel = (await getRemText(plugin, ancestor)).trim() : edgeLabel = (await getRemText(plugin, ancestor)).trim() + "-" + edgeLabel;
-        else
-          edgeLabel == "" ? edgeLabel = (await getRemText(plugin, ancestor)).trim() : edgeLabel = edgeLabel + "-" + (await getRemText(plugin, ancestor)).trim();
-
-        ancestor = await ancestor.getParentRem();
-        continue;
+        // Add edge from ancestor to parent
+        edges.add({
+          id: `${nextAncestor._id}-${parentRem._id}`,
+          source: nextAncestor._id,
+          target: parentRem._id,
+          label: edgeLabel,
+          type: "smoothstep",
+          sourceHandle: "bottom",
+          targetHandle: alignLeft? "left" : "right"
+        });
       }
-      //ancestor = (await getNextParents(plugin, ancestor as Rem))[0];
     }
   }
 }
@@ -432,53 +417,81 @@ async function collectChildren(
   // Get the parent's position
   let parentPosition = nodesMap.get(rem._id)?.position ?? { x: 0, y: 0 };
 
-  // Fetch the children
-  //let children = await rem.taggedRem();
-  //const childrenRem = await rem.getChildrenRem();
+  /*
   let children : Rem[] = [];
+
+  // Fetch Rem children
   let childrenRem = await rem.getChildrenRem();
 
   for (const c of childrenRem) {
-    console.log(await getRemText(plugin, c));
+    //console.log(await getRemText(plugin, c));
     const isReferencing = await isReferencingRem(plugin, c);
     const type = await c.getType();
 
     // Concepts
-    if (!isReferencing &&
+    if (//!isReferencing &&
         (type === RemType.CONCEPT) &&
         !specialNames.includes(await getRemText(plugin, c))) {
       children.push(c);
     }
   }
 
-  let childrenTags = await rem.taggedRem();
+  // Fetch Refs
+  let childrenRef = await rem.remsReferencingThis();
 
-  for (const c of childrenTags) {
+  for (const c of childrenRef) {
     const text = await getRemText(plugin, c);
-    const isReferencing = await isReferencingRem(plugin, c);
     const type = await c.getType();
 
     // Concepts
-    if (!isReferencing &&
+    if (//!isReferencing &&
         (type === RemType.CONCEPT) &&
         !specialNames.includes(await getRemText(plugin, c))) {
       children.push(c);
-    }
-
-    if (isReferencing || type == RemType.DESCRIPTOR) {
+    } else {
       const cchildren = await c.getChildrenRem();
 
       for (const c of cchildren) {
         const text = await getRemText(plugin, c);
-        const isReferencing = await isReferencingRem(plugin, c);
+        //const isReferencing = await isReferencingRem(plugin, c);
         const type = await c.getType();
 
         // Concepts
-        if (!isReferencing && (type === RemType.CONCEPT) && !specialNames.includes(await getRemText(plugin, c)))
+        if ((type === RemType.CONCEPT) && !specialNames.includes(await getRemText(plugin, c)))
           children.push(c);
+      }
+      
+      // Fetch Refs of Ref. 
+      let childrenRef2 = await c.remsReferencingThis();
+
+      for (const c of childrenRef2) {
+        const text = await getRemText(plugin, c);
+        const type = await c.getType();
+
+        // Concepts
+        if (//!isReferencing &&
+            (type === RemType.CONCEPT) &&
+            !specialNames.includes(await getRemText(plugin, c))) {
+          children.push(c);
+        } else {
+          const cchildren = await c.getChildrenRem();
+
+          for (const c of cchildren) {
+            const text = await getRemText(plugin, c);
+            //const isReferencing = await isReferencingRem(plugin, c);
+            const type = await c.getType();
+
+            // Concepts
+            if ((type === RemType.CONCEPT) && !specialNames.includes(await getRemText(plugin, c)))
+              children.push(c);
+          }
+        }
       }
     }
   }
+  */
+
+  let children = await getNextChildren(plugin, rem);
 
   //console.log("children.length: " + children.length);
 
@@ -498,9 +511,10 @@ async function collectChildren(
     // Position each child
     for (let i = 0; i < children.length; i++) {
       const child = children[i];
-      const text = await getRemText(plugin, child);
+      let text = await formatIfLayerConcept(plugin, child);
+
       const nodeWidth = calcNodeWidth(text); // Example width150
-      const nodeHeight = Math.max(50, calcNodeHeight(text, nodeWidth) * 2); // Example height50
+      const nodeHeight = Math.max(50, calcNodeHeight2(text, nodeWidth)); // Example height50
 
       // Place the child at the center of its subtree
       const childX = currentX + subtreeWidths[i] / 2;
@@ -557,6 +571,9 @@ async function collectProperties( plugin: RNPlugin,
                                   edges: Set<Edge>,
                                   includeQuestions: boolean,
                                   includeRefs: boolean) {
+  const nodeWidth = 300;
+  const nodeWidthQuestions = 300;
+  const nodeHeight = 50;
   const spacing_x = 300;   // Horizontal spacing between nodes
   const spacing_y = 20;    // Vertical spacing between nodes
 
@@ -569,7 +586,7 @@ async function collectProperties( plugin: RNPlugin,
   const localRems = await selectedRem.getChildrenRem();
   for (const child of localRems) {
     //if (await referencesEigenschaften(plugin, child)) {
-    console.log(await getRemText(plugin, child));
+    //console.log(await getRemText(plugin, child));
     if((await getRemText(plugin, child)).search("Eigenschaften") != -1 || await referencesEigenschaften(plugin, child)) {
       localProps = await child.getChildrenRem();
       break;
@@ -611,7 +628,7 @@ async function collectProperties( plugin: RNPlugin,
     localRems.map(async child => {
       const type = await child.getType();
       const text = await getRemText(plugin, child);
-      return (type === RemType.DESCRIPTOR || await isReferencingRem(plugin, child)) && !specialLayerNames.some(name => text.includes(name)) ? child : null;
+      return (type === RemType.DESCRIPTOR) && !specialLayerNames.some(name => text.includes(name)) ? child : null;
     })
   );
   
@@ -619,7 +636,7 @@ async function collectProperties( plugin: RNPlugin,
 
   descriptors = await filterSpecial(plugin, descriptors);
 
-  console.log("Descriptors: " + descriptors.length);
+  //console.log("Descriptors: " + descriptors.length);
 
   // Collect all main nodes to be added
   const allMainNodes = [
@@ -637,7 +654,7 @@ async function collectProperties( plugin: RNPlugin,
   const heights = nodeTexts.map((text) => {
     //const lines = Math.ceil(text.length / 10); // Adjust as needed
     //return lineHeight * lines;
-    return calcNodeHeight(text, 300);
+    return calcNodeHeight2(text, nodeWidth);
   });
 
   // Calculate total height including spacing
@@ -650,8 +667,8 @@ async function collectProperties( plugin: RNPlugin,
   async function addNode(rem: Rem, type: string, position: {x: number, y:number}) {
     if (!nodesMap.has(rem._id)) {
       const text = await getRemText(plugin, rem);
-      const width = type == "parent" ? 150 : 300; //calculateTextWidth(text);
-      const height = type == "parent" ? 50 : Math.max(50, calcNodeHeight(text, 300));
+      const width = type == "parent" ? nodeWidth/2 : nodeWidth; //calculateTextWidth(text);
+      const height = type == "parent" ? 50 : Math.max(50, calcNodeHeight2(text, nodeWidth));
       const data = { label: text, width, height };
       nodesMap.set(rem._id, { rem, type, position, data });
     }
@@ -669,7 +686,7 @@ async function collectProperties( plugin: RNPlugin,
       sourceHandle: "right",
       targetHandle: "left",
     });
-    currentY += calcNodeHeight(await getRemText(plugin, prop), 300) + spacing_y;
+    currentY += calcNodeHeight2(await getRemText(plugin, prop), nodeWidth) + spacing_y;
   }
 
   // Add local questions if includeQuestions is true
@@ -686,7 +703,7 @@ async function collectProperties( plugin: RNPlugin,
         sourceHandle: "right",
         targetHandle: "left",
       });
-      currentY += calcNodeHeight(await getRemText(plugin, prop), 300) + spacing_y;
+      currentY += calcNodeHeight2(await getRemText(plugin, prop), nodeWidthQuestions) + spacing_y;
     }
 
     // Add referencing questions with their parent
@@ -725,7 +742,7 @@ async function collectProperties( plugin: RNPlugin,
         });
       }
       //currentY += lineHeight * ((await getRemText(plugin, q)).length / 10) + spacing_y;
-      currentY += calcNodeHeight(await getRemText(plugin, q), 300) + spacing_y;
+      currentY += calcNodeHeight2(await getRemText(plugin, q), nodeWidthQuestions) + spacing_y;
     }
 
     // OLD: Add referencing answers with their parent question
@@ -773,7 +790,7 @@ async function collectProperties( plugin: RNPlugin,
         //
         collectEnvironment(plugin, parentQuestion, nodesMap, edges);
 
-        currentY += calcNodeHeight(await getRemText(plugin, a), 300) + spacing_y;
+        currentY += calcNodeHeight2(await getRemText(plugin, a), nodeWidthQuestions) + spacing_y;
       }
     }
   }
@@ -790,7 +807,7 @@ async function collectProperties( plugin: RNPlugin,
       sourceHandle: "right",
       targetHandle: "left",
     });
-    currentY += calcNodeHeight(await getRemText(plugin, l), 300) + spacing_y;
+    currentY += calcNodeHeight2(await getRemText(plugin, l), 300) + spacing_y;
   }
 }
 
@@ -800,9 +817,9 @@ async function buildGraph(plugin: RNPlugin, selectedRem: Rem, includeQuestions: 
   const edges = new Set<Edge>();
 
   const focusedPosition = { x: 0, y: 0 };
-  const text = await getRemText(plugin, selectedRem);
+  const text = await formatIfLayerConcept(plugin, selectedRem);
   const width = calcNodeWidth(text);
-  const height = Math.max(50, calcNodeHeight(text, width) * 3);
+  const height = Math.max(50, calcNodeHeight2(text, width));
   const focusedData = { label: text, width: width, height: height, rem: selectedRem };
   nodesMap.set(selectedRem._id, { 
     rem: selectedRem, 
@@ -895,11 +912,12 @@ function InheritanceWidget() {
     setEdges(newEdges);
   }
 
-  async function onNodeClick<T extends Node>(_event: React.MouseEvent, node: T) {
+  async function onNodeContextMenu<T extends Node>(_event: React.MouseEvent, node: T) {
     try {
       const focusedRem = (await plugin.rem.findOne(node.id)) as Rem;
       if (focusedRem) {
-        await plugin.storage.setSession('selectedRemId', focusedRem._id);
+        //await plugin.storage.setSession('selectedRemId', focusedRem._id);
+        await plugin.window.openRem(focusedRem);
       } else {
         await plugin.app.toast('No Rem is currently selected.');
       }
@@ -908,8 +926,10 @@ function InheritanceWidget() {
     }
   }
 
-  async function expandNode(plugin: RNPlugin, nodeId: string) {
-    
+  async function onNodeClick<T extends Node>(event: React.MouseEvent, node: T) {
+    event.preventDefault();
+    const nodeId = node.id;
+
     const nodesMap: Map<string, { rem: Rem; type: string; position: { x: number; y: number }; data: NodeData }> = new Map();
     nodes.forEach(node => {
       const rem = node.data.rem as Rem;
@@ -949,11 +969,6 @@ function InheritanceWidget() {
     const newEdges = Array.from(edgesSet);
     setNodes(newNodes);
     setEdges(newEdges);
-  }
-
-  async function onNodeContextMenu<T extends Node>(event: React.MouseEvent, node: T) {
-    event.preventDefault();
-    await expandNode(plugin, node.id);
   }
 
   return (
