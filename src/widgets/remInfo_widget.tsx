@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RNPlugin, RemType } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 import { RemViewer } from '@remnote/plugin-sdk';
-import { specialTags, getRemText, isReferencingRem, getClassType, getAncestorLineageString } from '../utils/utils';
+import { specialTags, getRemText, isReferencingRem, getClassType, getAncestorLineageString, getClassProperties } from '../utils/utils';
 
 // Assuming Rem is a type defined elsewhere, e.g., imported from a library
 interface ListComponentProps {
@@ -33,6 +33,7 @@ export function RemInfoWidget() {
     );
 
     // State variables for Rem data
+    const [properties, setProperties] = useState<Rem[]>([]);
     const [tags, setTags] = useState<Rem[]>([]);
     const [taggedRems, setTaggedRems] = useState<Rem[]>([]);
     const [ancestorTags, setAncestorTags] = useState<Rem[]>([]);
@@ -47,6 +48,7 @@ export function RemInfoWidget() {
     useEffect(() => {
         if (focusedRem) {
             // Reset all states to empty arrays when a new Rem is selected
+            setProperties([]);
             setTags([]);
             setTaggedRems([]);
             setAncestorTags([]);
@@ -61,6 +63,7 @@ export function RemInfoWidget() {
             const fetchData = async () => {
             try {
                 const [
+                propertiesData,
                 tagsData,
                 taggedRemsData,
                 ancestorTagsData,
@@ -71,6 +74,7 @@ export function RemInfoWidget() {
                 classTypeData,
                 lineageData
                 ] = await Promise.all([
+                getClassProperties(plugin, focusedRem),
                 focusedRem.getTagRems(),
                 focusedRem.taggedRem(),
                 focusedRem.ancestorTagRem(),
@@ -83,6 +87,7 @@ export function RemInfoWidget() {
                 ]);
 
                 // Update states with new data
+                setProperties(propertiesData || []);
                 setTags(tagsData || []);
                 setTaggedRems(taggedRemsData || []);
                 setAncestorTags(ancestorTagsData || []);
@@ -102,6 +107,7 @@ export function RemInfoWidget() {
             fetchData();
         } else {
             // No Rem focused: reset states and stop loading
+            setProperties([]);
             setTags([]);
             setTaggedRems([]);
             setAncestorTags([]);
@@ -125,6 +131,7 @@ export function RemInfoWidget() {
         <div>
             <p>Class Type: {classType ? <RemViewer remId={classType._id} /> : 'None'}</p>
             <p>Ancestor Lineage: {lineage}</p>
+            <ListComponent title="Properties" rems={properties} />
             <ListComponent title="Tags" rems={tags} />
             <ListComponent title="Tagged Rems" rems={taggedRems} />
             <ListComponent title="Ancestor Tags" rems={ancestorTags} />
