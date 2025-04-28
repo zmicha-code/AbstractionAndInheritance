@@ -2,9 +2,9 @@ import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, 
 
 import { NodeData } from "../components/Nodes";
 
-export const specialTags = ["Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight", "Hide Bullets", "Status"];
+export const specialTags = ["Template Slot", "Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight", "Hide Bullets", "Status"];
 
-export const specialNames = ["Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Definition", "Eigenschaften", "Alias", "Bullet Icon"];
+export const specialNames = ["Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Bullet Icon"]; // , "Definition", "Eigenschaften"
 
 // Map RemNote highlight colors to CSS colors
 export const highlightColorMap: { [key: string]: string } = {
@@ -285,7 +285,7 @@ export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<R
   // DESCRIPTORS
   // DESCRIPTORS inherit explicitly through TAGS and their type is set explicitly by TAGS
   if(parentRem && remType == RemType.DESCRIPTOR && tags.length > 0) {
-    console.log("REM is a DESCRIPTOR with TAGS:" + await getRemText(plugin, tags[0]));
+    //console.log("REM is a DESCRIPTOR with TAGS:" + await getRemText(plugin, tags[0]));
 
     for (const tag of tags) {
       if (tag && await tag.getType() == RemType.CONCEPT ) {
@@ -298,7 +298,7 @@ export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<R
   // DESCRIPTORS inherit through Rem Hierarchie and their type is set implicitly by Rem Hierarchie if their type is not set through TAGS
   if(parentRem && remType == RemType.DESCRIPTOR && tags.length == 0) {
 
-    console.log("REM has no TAGS and is a DESCRIPTOR");
+    //console.log("REM has no TAGS and is a DESCRIPTOR");
 
     const parentType = await parentRem.getType();
 
@@ -577,8 +577,10 @@ export async function removeReferencingRem(rems: Rem[]): Promise<Rem[]> {
 // Helper function to check if a Rem is an ancestor of another
 export async function isClassAncestor(plugin: RNPlugin, potentialAncestor: Rem, rem: Rem): Promise<boolean> {
   let currentRem: Rem | null = rem;
-  while (currentRem) {
+
+  while (currentRem && !await currentRem.isDocument()) {
     const classType = await getClassType(plugin, currentRem);
+
     if (classType && classType._id === potentialAncestor._id) {
       return true;
     }
@@ -594,6 +596,7 @@ export async function getClassType(plugin: RNPlugin, rem: Rem): Promise<Rem | nu
   const parent = await rem.getParentRem();
   const type = await rem.getType();
   const isReferencing = await isReferencingRem(plugin, rem);
+  const isDocument = await rem.isDocument();
   const tagRems = await rem.getTagRems();
   const tagData = await Promise.all(
       tagRems.map(async (tagRem: Rem) => ({
@@ -605,19 +608,45 @@ export async function getClassType(plugin: RNPlugin, rem: Rem): Promise<Rem | nu
       .filter(({ text }) => !specialTags.includes(text))
       .map(({ rem }) => rem);
 
+  // DOCUMENT with TAGS
+  if (await rem.isDocument() && tags.length > 0) {
+    return tags[0];
+  } 
+
+  // DOCUMENT without TAGS
+  if (await rem.isDocument())
+    return rem;
+
+  // SLOT with TAG
+  if(await rem.isSlot() && tags.length > 0) {
+    return tags[0];
+  }
+
+  
+  // SLOT: Should always be child of CONCEPT
+  if(await rem.isSlot()) {
+    if(parent && await parent.getType() == RemType.CONCEPT)
+      return parent;
+  }
+
   // CONCEPT with TAGS
   if (type === RemType.CONCEPT && tags.length > 0) {
     return tags[0];
   } 
 
-  // CONCEPT without TAGS
-  if (type === RemType.CONCEPT && tags.length == 0) {
+  // CONCEPT, DOCUMENT, without TAGS
+  if(type === RemType.CONCEPT && isDocument && tags.length == 0) {
+    return rem;
+  }
+  
+  // Concept, not DOCUMENT, without TAGS
+  if (type === RemType.CONCEPT && !isDocument && tags.length == 0) {
 
-      if(!parent || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition") return null;
+      if(!parent || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition") return rem;
 
       const parentType = await parent.getType()
 
-      if(parentType == RemType.CONCEPT)
+      if(parentType == RemType.CONCEPT || await parent.isDocument())
           return parent;
 
       if (parentType == RemType.DESCRIPTOR) {
@@ -633,6 +662,9 @@ export async function getClassType(plugin: RNPlugin, rem: Rem): Promise<Rem | nu
             return parent;
           }
       }
+
+      //if(await parent.isDocument())
+      //    return parent;
   } 
 
   // DESCRIPTOR without TAG
@@ -656,19 +688,31 @@ export async function getClassType(plugin: RNPlugin, rem: Rem): Promise<Rem | nu
   if (type === RemType.DESCRIPTOR && isReferencing) {
       const referencedRem = (await rem.remsBeingReferenced())[0];
 
-      console.log("REF Descriptor referencing " + await getRemText(plugin, referencedRem) + " of type " + await getRemText(plugin, await getClassType(plugin, referencedRem) as Rem));
+      //console.log("REF Descriptor referencing " + await getRemText(plugin, referencedRem) + " of type " + await getRemText(plugin, await getClassType(plugin, referencedRem) as Rem));
 
       //const referencedParent = await referencedRem.getParentRem();
       const referencedClass = await getClassType(plugin, referencedRem);
 
+      if(await referencedRem.isDocument()) {
+        //console.log("Referenced Rem is document");
+
+        return referencedClass;
+      }
+
       if (referencedClass && parent && await isClassAncestor(plugin, referencedClass, parent)) {
         // Special case: referenced Rem's parent is an ancestor of descriptor's parent
         //return getClassType(plugin, parent);
+        //console.log("HELLO?");
+
         if(!parent || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition") return null;
+
         return parent;
       } else {
         // Inherit from the referenced Rem's class type
         //return getClassType(plugin, referencedRem);
+
+        //console.log("REF DESCRIPTOR " + await getRemText(plugin, rem) + " is of type " + await getRemText(plugin, referencedRem));
+
         return referencedRem;
       }
   }
@@ -677,19 +721,20 @@ export async function getClassType(plugin: RNPlugin, rem: Rem): Promise<Rem | nu
 }   
 
 // Function to get the ancestor lineage as a string
-export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<string> {
-  const lineage: Rem[] = [rem];
+export async function getAncestorLineageString(plugin: RNPlugin, rem: Rem): Promise<string> {
+  //const lineage: Rem[] = [rem];
+  const lineage: Rem[] = [];
   const visited = new Set<string>([rem._id]); // Track visited Rem IDs
   let currentRem: Rem | null = rem;
 
   while (currentRem) {
       const classType = await getClassType(plugin, currentRem);
       if (classType && !visited.has(classType._id)) {
-      lineage.push(classType);
-      visited.add(classType._id);
-      currentRem = classType;
-      } else {
-      break;
+        lineage.push(classType);
+        visited.add(classType._id);
+        currentRem = classType;
+        } else {
+        break;
       }
   }
 
@@ -700,6 +745,26 @@ export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<st
       return await getRemText(plugin, r, true);
   }));
   return texts.join(' -> ');
+}
+
+export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  //const lineage: Rem[] = [rem];
+  const lineage: Rem[] = [];
+  const visited = new Set<string>([rem._id]); // Track visited Rem IDs
+  let currentRem: Rem | null = rem;
+
+  while (currentRem) {
+      const classType = await getClassType(plugin, currentRem);
+      if (classType && !visited.has(classType._id)) {
+        lineage.push(classType);
+        visited.add(classType._id);
+        currentRem = classType;
+      } else {
+        break;
+      }
+  }
+
+  return lineage;
 }
 
 export function calcNodeHeight(

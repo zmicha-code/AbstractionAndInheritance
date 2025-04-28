@@ -1,6 +1,7 @@
 import { declareIndexPlugin, ReactRNPlugin, WidgetLocation,
   Rem, RemType, SetRemType,
-  RichTextElementRemInterface, RichTextInterface } from '@remnote/plugin-sdk';
+  RichTextElementRemInterface, RichTextInterface, 
+  RNPlugin} from '@remnote/plugin-sdk';
 
 import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUSED_NODE_STYLE,
    getRemText, getNextParents, getAllParents, referencesEigenschaften, isReferencingRem,
@@ -11,7 +12,8 @@ import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUS
    getNextChildren,
    formatIfLayerConcept,
    isLayerConcept,
-   getAllChildren
+   getAllChildren,
+   getAncestorLineage
 } from "../utils/utils";
 
 import '../style.css';
@@ -30,6 +32,7 @@ async function setRemToReference(plugin: ReactRNPlugin, newReference: Rem, refer
 
 // Main function to handle the "/implement" command
 async function handleImplementCommand(plugin: ReactRNPlugin): Promise<void> {
+  //console.log("Handle implement command");
   await plugin.window.openFloatingWidget("implement_widget",  {top: -600, left: -1500}, "rn-help-button"); // "rn-editor__rem__body__text"
 }
 
@@ -66,40 +69,55 @@ async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
   await plugin.app.toast(`Updated ${referencingRems.length} Rems to reference the target Rem.`);
 }
 
+async function isAncestor2(plugin: RNPlugin, ancestor: Rem, rem: Rem): Promise<boolean> {
+
+  const ancestors = await getAncestorLineage(plugin, rem);
+
+  for(const a of ancestors) {
+    if(ancestor._id == a._id)
+      return true;
+  }
+
+  return false;
+}
+
+// RemA has child RemB which has child RemC and C is referencing e.g. Eigenschaften from A. If
+// i now want B to reference Eigenschaften from A i have to update C to reference Eigenschaften from B.
+// TODO: Currently only updates Rem Hierarchie Children and Nor Children that are Referencing
 async function handleInsertCommand(plugin: ReactRNPlugin): Promise<void> {
-  const focusedRem = await plugin.focus.getFocusedRem();
+  const eigenschaftenB = await plugin.focus.getFocusedRem();
 
   // Ensure the focused Rem is a descriptor
-  if (!focusedRem || (await focusedRem.getType()) !== RemType.DESCRIPTOR) {
+  if (!eigenschaftenB || (await eigenschaftenB.getType()) !== RemType.DESCRIPTOR) {
     await plugin.app.toast('Selected Rem is not a descriptor.');
     return;
   }
 
-  const parent = await focusedRem.getParentRem();
-  if (!parent || (await parent.getType()) !== RemType.CONCEPT) {
-    await plugin.app.toast('Selected Rem does not have a concept as parent.');
+  const remB = await eigenschaftenB.getParentRem();
+  if (!remB) { // || (await remB.getType()) !== RemType.CONCEPT
+    await plugin.app.toast('Selected Rem does not have a valid parent.');
     return;
   }
 
   // Get the Rem that the focused descriptor is referencing
-  const referencedRems = await focusedRem.remsBeingReferenced();
+  const referencedRems = await eigenschaftenB.remsBeingReferenced();
   if (referencedRems.length === 0) {
     await plugin.app.toast('The selected descriptor does not reference any Rem.');
     return;
   }
 
   // Assuming the descriptor references only one Rem
-  const targetRem = referencedRems[0];
+  const eigenschaftenA = referencedRems[0];
 
   // Get all Rems directly referencing the target Rem
-  const children = await targetRem.remsReferencingThis();
+  const eigenschaftenCAndSoOn = await eigenschaftenA.remsReferencingThis();
 
-  console.log(await getRemText(plugin, targetRem) + " has deepRemsBeingReferenced: " + children.length);
+  //console.log(await getRemText(plugin, eigenschaftenA) + " has deepRemsBeingReferenced: " + eigenschaftenCAndSoOn.length);
 
   // Remove the focusedRem from the children list
-  const filteredChildren = children.filter(child => child._id !== focusedRem._id);
+  const _eigenschaftenCAndSoOn = eigenschaftenCAndSoOn.filter(child => child._id !== eigenschaftenB._id);
 
-  if (filteredChildren.length === 0) {
+  if (_eigenschaftenCAndSoOn.length === 0) {
     await plugin.app.toast('No other Rems reference the target Rem.');
     return;
   }
@@ -107,19 +125,20 @@ async function handleInsertCommand(plugin: ReactRNPlugin): Promise<void> {
   // Update each child that references the target Rem to reference the focused Rem
   let updatedCount = 0;
 
-  for (const child of filteredChildren) {
-    const parentConcept = await child.getParentRem();
+  // TODO: update only children that are in the hierarchie below the focused rem
+  for (const eigenschaftenC of _eigenschaftenCAndSoOn) {
+    const remC = await eigenschaftenC.getParentRem();
 
-    if (!parentConcept || (await parentConcept.getType()) !== RemType.CONCEPT) {
+    if (!remC) { // || (await remC.getType()) !== RemType.CONCEPT
       continue;
     }
 
     // Check if the child's parent concept is a descendant of the focusedRem's parent
-    if (await isAncestor(plugin, parent, parentConcept)) {
-      await setRemToReference(plugin, focusedRem, child);
+    if (await isAncestor2(plugin, remB, remC)) {
+      await setRemToReference(plugin, eigenschaftenB, eigenschaftenC);
       updatedCount++;
     } else {
-      console.log(await getRemText(plugin, parentConcept) + " is not a descendant of " + await getRemText(plugin, parent));
+      //console.log(await getRemText(plugin, remC) + " is not a descendant of " + await getRemText(plugin, remB));
     }
   }
 
