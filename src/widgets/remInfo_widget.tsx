@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RNPlugin, RemType } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 import { RemViewer } from '@remnote/plugin-sdk';
-import { specialTags, getRemText, isReferencingRem, getClassType, getAncestorLineageString, getClassProperties } from '../utils/utils';
+import { specialTags, getRemText, isReferencingRem, getParentClassType, getAncestorLineageString, getClassProperties, getClassDescriptors } from '../utils/utils';
 
 // Assuming Rem is a type defined elsewhere, e.g., imported from a library
 interface ListComponentProps {
@@ -34,6 +34,7 @@ export function RemInfoWidget() {
 
     // State variables for Rem data
     const [properties, setProperties] = useState<Rem[]>([]);
+    const [descriptors, setDescriptors] = useState<Rem[]>([]);
     const [tags, setTags] = useState<Rem[]>([]);
     const [taggedRems, setTaggedRems] = useState<Rem[]>([]);
     const [ancestorTags, setAncestorTags] = useState<Rem[]>([]);
@@ -41,7 +42,7 @@ export function RemInfoWidget() {
     const [referencingRems, setReferencingRems] = useState<Rem[]>([]);
     const [referencedRems, setReferencedRems] = useState<Rem[]>([]);
     const [deepReferencedRems, setDeepReferencedRems] = useState<Rem[]>([]);
-    const [classType, setClassType] = useState<Rem | null>(null);
+    const [classType, setClassType] = useState<Rem[]>([]);
     const [lineage, setLineage] = useState<string>('');
     const [loading, setLoading] = useState(true);
 
@@ -49,6 +50,7 @@ export function RemInfoWidget() {
         if (focusedRem) {
             // Reset all states to empty arrays when a new Rem is selected
             setProperties([]);
+            setDescriptors([]);
             setTags([]);
             setTaggedRems([]);
             setAncestorTags([]);
@@ -56,7 +58,7 @@ export function RemInfoWidget() {
             setReferencingRems([]);
             setReferencedRems([]);
             setDeepReferencedRems([]);
-            setClassType(null);
+            setClassType([]);
             setLineage('');
             setLoading(true);
 
@@ -64,6 +66,7 @@ export function RemInfoWidget() {
             try {
                 const [
                 propertiesData,
+                descriptorsData,
                 tagsData,
                 taggedRemsData,
                 ancestorTagsData,
@@ -75,6 +78,7 @@ export function RemInfoWidget() {
                 lineageData
                 ] = await Promise.all([
                 getClassProperties(plugin, focusedRem),
+                getClassDescriptors(plugin, focusedRem),
                 focusedRem.getTagRems(),
                 focusedRem.taggedRem(),
                 focusedRem.ancestorTagRem(),
@@ -82,12 +86,14 @@ export function RemInfoWidget() {
                 focusedRem.remsReferencingThis(),
                 focusedRem.remsBeingReferenced(),
                 focusedRem.deepRemsBeingReferenced(),
-                getClassType(plugin, focusedRem),
+                // TODO: Multiple Lineages
+                getParentClassType(plugin, focusedRem),
                 getAncestorLineageString(plugin, focusedRem)
                 ]);
 
                 // Update states with new data
                 setProperties(propertiesData || []);
+                setDescriptors(descriptorsData || []);
                 setTags(tagsData || []);
                 setTaggedRems(taggedRemsData || []);
                 setAncestorTags(ancestorTagsData || []);
@@ -95,7 +101,7 @@ export function RemInfoWidget() {
                 setReferencingRems(referencingRemsData || []);
                 setReferencedRems(referencedRemsData || []);
                 setDeepReferencedRems(deepReferencedRemsData || []);
-                setClassType(classTypeData);
+                classTypeData != null ? setClassType(classTypeData) : setClassType([]);
                 setLineage(lineageData || 'None');
             } catch (error) {
                 console.error('Error fetching Rem data:', error);
@@ -115,12 +121,13 @@ export function RemInfoWidget() {
             setReferencingRems([]);
             setReferencedRems([]);
             setDeepReferencedRems([]);
-            setClassType(null);
+            setClassType([]);
             setLineage('');
             setLoading(false);
         }
     }, [focusedRem, plugin]);
 
+    // <p>Parent Class Type: {classType ? <RemViewer remId={classType[0]._id} /> : 'None'}</p>
     return (
         <div className="overflow-y-auto max-h-[500px]">
         {loading ? (
@@ -129,9 +136,10 @@ export function RemInfoWidget() {
         <div>No Rem is currently focused.</div>
         ) : (
         <div>
-            <p>Class Type: {classType ? <RemViewer remId={classType._id} /> : 'None'}</p>
+            <ListComponent title="Parent Types" rems={classType} />
             <p>Ancestor Lineage: {lineage}</p>
             <ListComponent title="Properties" rems={properties} />
+            <ListComponent title="Descriptors" rems={descriptors} />
             <ListComponent title="Tags" rems={tags} />
             <ListComponent title="Tagged Rems" rems={taggedRems} />
             <ListComponent title="Ancestor Tags" rems={ancestorTags} />

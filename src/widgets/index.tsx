@@ -71,7 +71,7 @@ async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
 
 async function isAncestor2(plugin: RNPlugin, ancestor: Rem, rem: Rem): Promise<boolean> {
 
-  const ancestors = await getAncestorLineage(plugin, rem);
+  const ancestors = (await getAncestorLineage(plugin, rem))[0];
 
   for(const a of ancestors) {
     if(ancestor._id == a._id)
@@ -201,6 +201,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register 
+  /*
   await plugin.app.registerWidget(
     'implement_widget',
     WidgetLocation.FloatingWidget,
@@ -211,6 +212,10 @@ async function onActivate(plugin: ReactRNPlugin) {
       },
     },
   );
+  */
+  await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
+    dimensions: { height: 'auto', width: '100%' },
+  });
 
   // New command: Implement descriptors
   await plugin.app.registerCommand({

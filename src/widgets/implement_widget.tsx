@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
-import { getRemText, isLayerConcept, getAllParents, isReferencingRem, getClassType, getAncestorLineage } from '../utils/utils';
+import { getRemText, isLayerConcept, getAllParents, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren} from '../utils/utils';
 import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // Define interface for descriptor items
@@ -38,6 +38,10 @@ async function createRemWithReference(plugin: RNPlugin, parentRem: Rem, descript
     }
 }
 
+async function createPropertyReference(plugin: RNPlugin, parentRem: Rem, propertyRem: Rem): Promise<void> {
+
+}
+
 // Check if a child with the given text already exists
 async function hasChildWithText(plugin: RNPlugin, parentRem: Rem, targetText: string): Promise<boolean> {
     if (!parentRem || !targetText) {
@@ -51,19 +55,6 @@ async function hasChildWithText(plugin: RNPlugin, parentRem: Rem, targetText: st
         }
     }
     return false;
-}
-
-async function isSameBaseType(plugin: RNPlugin, rem1: Rem, rem2: Rem): Promise <boolean> {
-    const ancestors1 = await getAncestorLineage(plugin, rem1);
-    const ancestors2 = await getAncestorLineage(plugin, rem2);
-
-    //if(ancestors1.length>0 && ancestors2.length>0) {
-    //    return ancestors1[ancestors1.length-1]._id == ancestors2[ancestors2.length-1]._id;
-    //}
-
-    //return false;
-
-    return (ancestors1.length>0 ? ancestors1[ancestors1.length-1]._id : rem1._id) == (ancestors2.length>0 ? ancestors2[ancestors2.length-1]._id : rem2._id);
 }
 
 /*
@@ -116,6 +107,7 @@ async function isSibling(plugin: RNPlugin, rem: Rem, root: Rem): Promise <boolea
 }
 
 // Is any of the ancestors of root a sibling to rem
+/*
 async function isSiblingOfAncestor(plugin: RNPlugin, rem: Rem, root: Rem): Promise<boolean> {
 
     if (await isSibling(plugin, rem, root)) 
@@ -128,7 +120,9 @@ async function isSiblingOfAncestor(plugin: RNPlugin, rem: Rem, root: Rem): Promi
 
     return isSiblingOfAncestor(plugin, rem, ancestors[0]);
 }
+    */
 
+/*
 async function isDifferentFamily(plugin: RNPlugin, rem: Rem, root: Rem): Promise<boolean> {
 
     const ancestors = await getAncestorLineage(plugin, root);
@@ -142,14 +136,17 @@ async function isDifferentFamily(plugin: RNPlugin, rem: Rem, root: Rem): Promise
 
     return false;
 }
+    */
 
 async function isOfSpecificType(plugin: RNPlugin, rem: Rem, root: Rem): Promise<boolean> {
 
-    const ancestors = await getAncestorLineage(plugin, root);
-    const remType = await getClassType(plugin, rem);
+    const ancestors = (await getAncestorLineage(plugin, root))[0];
+    const remType = await getParentClassType(plugin, rem);
+
+    if(remType == null) return false;
 
     for(const ancestor of ancestors) {
-        if(ancestor._id == remType?._id)
+        if(ancestor._id == remType[0]?._id)
             return true;
     }
 
@@ -248,8 +245,8 @@ async function getDescriptors(plugin: RNPlugin, focusedRem: Rem): Promise<Descri
     }
 
     const parentRem = await focusedRem.getParentRem();
-    const parentRemAncestor = await getClassType(plugin, parentRem as Rem);
-    const ancestorRems = await getAncestorLineage(plugin, focusedRem); //await getAllParents(plugin, focusedRem);
+    const parentRemAncestor = await getParentClassType(plugin, parentRem as Rem);
+    const ancestorRems = (await getAncestorLineage(plugin, focusedRem))[0]; 
 
     if (ancestorRems.length === 0) {
         console.log(await getRemText(plugin, focusedRem) + " has no valid Parents");
@@ -279,7 +276,7 @@ async function getDescriptors(plugin: RNPlugin, focusedRem: Rem): Promise<Descri
                 const isSpecial = specialNames.some(special => text.includes(special)) || text.includes("Collapse Tag Configure");
     
                 // Check if Descriptor is already present and not special
-                if (!isSpecial && !await hasChildWithText(plugin, focusedRem, text) && !desc.some(d => d.rem._id === descriptor.rem._id) && (descriptor.rem._id != parentRem?._id) && descriptor.rem._id != parentRemAncestor?._id ) {
+                if (!isSpecial && !await hasChildWithText(plugin, focusedRem, text) && !desc.some(d => d.rem._id === descriptor.rem._id) && (descriptor.rem._id != parentRem?._id) && parentRemAncestor != null && descriptor.rem._id != parentRemAncestor[0]?._id ) {
     
                     //console.log(await getRemText(plugin, descriptor.rem) + " !=  Parent Rem: " + await getRemText(plugin, parentRem as Rem));
                     //console.log("Descriptor Rem ID: " + descriptor.rem._id + " != Parent Rem ID: " + parentRem?._id);
@@ -310,7 +307,7 @@ async function getDescriptors(plugin: RNPlugin, focusedRem: Rem): Promise<Descri
             const isSpecial = specialNames.some(special => text.includes(special)) || text.includes("Collapse Tag Configure");
 
             // Check if Descriptor is already present and not special
-            if (!isSpecial && !await hasChildWithText(plugin, focusedRem, text) && !desc.some(d => d.rem._id === descriptor.rem._id) && (descriptor.rem._id != parentRem?._id) && descriptor.rem._id != parentRemAncestor?._id ) {
+            if (!isSpecial && !await hasChildWithText(plugin, focusedRem, text) && !desc.some(d => d.rem._id === descriptor.rem._id) && (descriptor.rem._id != parentRem?._id) && parentRemAncestor != null && descriptor.rem._id != parentRemAncestor[0]?._id ) {
 
                 //console.log(await getRemText(plugin, descriptor.rem) + " !=  Parent Rem: " + await getRemText(plugin, parentRem as Rem));
                 //console.log("Descriptor Rem ID: " + descriptor.rem._id + " != Parent Rem ID: " + parentRem?._id);
@@ -323,6 +320,7 @@ async function getDescriptors(plugin: RNPlugin, focusedRem: Rem): Promise<Descri
 }
 
 // ImplementWidget component
+/*
 export function ImplementWidget() {
     const plugin = usePlugin();
     const [currentRem, setCurrentRem] = useState("No Rem Focused");
@@ -379,6 +377,388 @@ export function ImplementWidget() {
                     )
                 })}
             </div>
+        </div>
+    );
+}
+*/
+
+export function ImplementWidget_NoGrouping() {
+    const plugin = usePlugin();
+    const [currentRem, setCurrentRem] = useState("No Rem Focused");
+    const [descriptors, setDescriptors] = useState<{ rem: Rem; text: string }[]>([]);
+
+    const focusedRem = useTracker(async (reactPlugin) => {
+        return await reactPlugin.focus.getFocusedRem();
+    });
+
+    useEffect(() => {
+        const fetchData = async () => {
+            if (focusedRem) {
+                const text = await getRemText(plugin, focusedRem);
+                setCurrentRem(text);
+                const descList = await getClassDescriptors(plugin, focusedRem);
+                const descWithText = await Promise.all(
+                    descList.map(async (rem) => ({
+                        rem,
+                        text: await getRemText(plugin, rem),
+                    }))
+                );
+                setDescriptors(descWithText);
+            }
+        };
+        fetchData();
+    }, [focusedRem, plugin]);
+
+    const handleDescriptorClick = async (descriptor: Rem) => {
+        await createRemWithReference(plugin, focusedRem!, descriptor);
+        const updatedDesc = await getClassDescriptors(plugin, focusedRem!);
+        const updatedDescWithText = await Promise.all(
+            updatedDesc.map(async (rem) => ({
+                rem,
+                text: await getRemText(plugin, rem),
+            }))
+        );
+        setDescriptors(updatedDescWithText);
+        plugin.window.closeFloatingWidget("implement_widget");
+    };
+
+    if (!focusedRem) return <div></div>;
+
+    return (
+        <div
+            style={{
+                border: '1px solid #ccc',
+                padding: '10px',
+                borderRadius: '5px',
+                overflowY: 'auto',
+                maxHeight: '500px',
+                width: '100%',
+                boxSizing: 'border-box',
+            }}
+        >
+            <div style={{ marginBottom: '10px' }}>{currentRem}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {descriptors.map(({ rem, text }) => (
+                    <MyRemNoteButton
+                        key={rem._id}
+                        text={text}
+                        onClick={() => handleDescriptorClick(rem)}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}
+
+export function ImplementWidget_DescriptorGrouping() {
+    const plugin = usePlugin();
+    const [currentRem, setCurrentRem] = useState("No Rem Focused");
+    const [groupedDescriptors, setGroupedDescriptors] = useState<Map<string, { parent: Rem; parentText: string; descriptors: { rem: Rem; text: string }[] }>>(new Map());
+
+    const focusedRem = useTracker(async (reactPlugin) => {
+        return await reactPlugin.focus.getFocusedRem();
+    });
+
+    useEffect(() => {
+        const fetchData = async () => {
+            if (focusedRem) {
+                const text = await getRemText(plugin, focusedRem);
+                setCurrentRem(text);
+                const descList = await getClassDescriptors(plugin, focusedRem);
+                const descWithTextAndParent = await Promise.all(
+                    descList.map(async (rem) => {
+                        const text = await getRemText(plugin, rem);
+                        const parent = await rem.getParentRem();
+                        const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                        return { rem, text, parent, parentText };
+                    })
+                );
+
+                // Group by parent._id
+                const grouped = new Map<string, { parent: Rem; parentText: string; descriptors: { rem: Rem; text: string }[] }>();
+                for (const { rem, text, parent, parentText } of descWithTextAndParent) {
+                    if (parent) {
+                        const parentId = parent._id;
+                        if (!grouped.has(parentId)) {
+                            grouped.set(parentId, { parent, parentText, descriptors: [] });
+                        }
+                        grouped.get(parentId)!.descriptors.push({ rem, text });
+                    }
+                }
+                setGroupedDescriptors(grouped);
+            }
+        };
+        fetchData();
+    }, [focusedRem, plugin]);
+
+    const handleDescriptorClick = async (descriptor: Rem) => {
+        await createRemWithReference(plugin, focusedRem!, descriptor);
+        const updatedDesc = await getClassDescriptors(plugin, focusedRem!);
+        const updatedDescWithTextAndParent = await Promise.all(
+            updatedDesc.map(async (rem) => {
+                const text = await getRemText(plugin, rem);
+                const parent = await rem.getParentRem();
+                const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                return { rem, text, parent, parentText };
+            })
+        );
+        const updatedGrouped = new Map<string, { parent: Rem; parentText: string; descriptors: { rem: Rem; text: string }[] }>();
+        for (const { rem, text, parent, parentText } of updatedDescWithTextAndParent) {
+            if (parent) {
+                const parentId = parent._id;
+                if (!updatedGrouped.has(parentId)) {
+                    updatedGrouped.set(parentId, { parent, parentText, descriptors: [] });
+                }
+                updatedGrouped.get(parentId)!.descriptors.push({ rem, text });
+            }
+        }
+        setGroupedDescriptors(updatedGrouped);
+        plugin.window.closeFloatingWidget("implement_widget");
+    };
+
+    if (!focusedRem) return <div></div>;
+
+    return (
+        <div
+            style={{
+                border: '1px solid #ccc',
+                padding: '10px',
+                borderRadius: '5px',
+                overflowY: 'auto',
+                maxHeight: '500px',
+                width: '100%',
+                boxSizing: 'border-box',
+            }}
+        >
+            <div style={{ marginBottom: '10px' }}>{currentRem}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {Array.from(groupedDescriptors.values()).map(({ parent, parentText, descriptors }) => (
+                    <div key={parent._id} style={{ border: '1px solid #ddd', padding: '8px', borderRadius: '4px' }}>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>{parentText}</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {descriptors.map(({ rem, text }) => (
+                                <MyRemNoteButton
+                                    key={rem._id}
+                                    text={text}
+                                    onClick={() => handleDescriptorClick(rem)}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+interface Item {
+    rem: Rem;
+    text: string;
+    type: 'descriptor' | 'property';
+  }
+  
+  interface GroupedItems {
+    parent: Rem;
+    parentText: string;
+    items: Item[];
+  }
+
+  export function ImplementWidget() {
+    const plugin = usePlugin();
+    const [currentRem, setCurrentRem] = useState("No Rem Focused");
+    const [groupedItems, setGroupedItems] = useState<Map<string, GroupedItems>>(new Map());
+    const [loading, setLoading] = useState(true);
+
+    const focusedRem = useTracker(async (reactPlugin) => {
+        return await reactPlugin.focus.getFocusedRem();
+    });
+
+    useEffect(() => {
+        const fetchData = async () => {
+            if (focusedRem) {
+                //
+                setLoading(true);
+
+                const text = await getRemText(plugin, focusedRem);
+                setCurrentRem(text);
+
+                const children = await getCleanChildren(plugin, focusedRem);
+                const existingNames = new Set(await Promise.all(children.map(child => getRemText(plugin, child))));
+
+                // LOL! IDK why this is here
+                existingNames.add("Collapse Tag Configure Options")
+
+                const [propList, descList] = await Promise.all([
+                    getClassProperties(plugin, focusedRem),
+                    getClassDescriptors(plugin, focusedRem),
+                ]);
+
+                const filteredPropList = await Promise.all(
+                    propList.map(async (rem) => {
+                        const text = await getRemText(plugin, rem);
+                        return !existingNames.has(text) ? rem : null;
+                    })
+                ).then(results => results.filter(rem => rem !== null));
+
+                const filteredDescList = await Promise.all(
+                    descList.map(async (rem) => {
+                        const text = await getRemText(plugin, rem);
+                        return !existingNames.has(text) ? rem : null;
+                    })
+                ).then(results => results.filter(rem => rem !== null));
+
+                const descWithTextAndParent = await Promise.all(
+                    filteredDescList.map(async (rem) => {
+                        const text = await getRemText(plugin, rem);
+                        const parent = await rem.getParentRem();
+                        const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                        return { rem, text, parent, parentText, type: 'descriptor' as const };
+                    })
+                );
+
+                const propWithTextAndParent = await Promise.all(
+                    filteredPropList.map(async (rem) => {
+                        const text = await getRemText(plugin, rem);
+                        const parent = await rem.getParentRem();
+                        const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                        return { rem, text, parent, parentText, type: 'property' as const };
+                    })
+                );
+
+                const allItems = [...propWithTextAndParent, ...descWithTextAndParent];
+                const grouped = new Map<string, GroupedItems>();
+
+                for (const { rem, text, parent, parentText, type } of allItems) {
+                    if (parent) {
+                        const parentId = parent._id;
+                        if (!grouped.has(parentId)) {
+                            grouped.set(parentId, { parent, parentText, items: [] });
+                        }
+                        grouped.get(parentId)!.items.push({ rem, text, type });
+                    }
+                }
+
+                try {
+                    setGroupedItems(grouped);
+                } catch(error) {
+
+                } finally {
+                    setLoading(false);
+                }
+            } else {
+                setLoading(false);
+            }
+        };
+        fetchData();
+    }, [focusedRem, plugin]);
+
+    const handleItemClick = async (item: Rem, type: 'descriptor' | 'property') => {
+        if (type === 'descriptor') {
+            await createRemWithReference(plugin, focusedRem!, item);
+        } else {
+            await createPropertyReference(plugin, focusedRem!, item);
+        }
+
+        const children = await getCleanChildren(plugin, focusedRem!);
+        const existingNames = new Set(await Promise.all(children.map(child => getRemText(plugin, child))));
+
+        const updatedDesc = await getClassDescriptors(plugin, focusedRem!);
+        const updatedProp = await getClassProperties(plugin, focusedRem!);
+
+        const filteredUpdatedDesc = await Promise.all(
+            updatedDesc.map(async (rem) => {
+                const text = await getRemText(plugin, rem);
+                return !existingNames.has(text) ? rem : null;
+            })
+        ).then(results => results.filter(rem => rem !== null));
+
+        const filteredUpdatedProp = await Promise.all(
+            updatedProp.map(async (rem) => {
+                const text = await getRemText(plugin, rem);
+                return !existingNames.has(text) ? rem : null;
+            })
+        ).then(results => results.filter(rem => rem !== null));
+
+        const updatedDescWithTextAndParent = await Promise.all(
+            filteredUpdatedDesc.map(async (rem) => {
+                const text = await getRemText(plugin, rem);
+                const parent = await rem.getParentRem();
+                const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                return { rem, text, parent, parentText, type: 'descriptor' as const };
+            })
+        );
+
+        const updatedPropWithTextAndParent = await Promise.all(
+            filteredUpdatedProp.map(async (rem) => {
+                const text = await getRemText(plugin, rem);
+                const parent = await rem.getParentRem();
+                const parentText = parent ? await getRemText(plugin, parent) : "No Parent";
+                return { rem, text, parent, parentText, type: 'property' as const };
+            })
+        );
+
+        const allUpdatedItems = [...updatedPropWithTextAndParent, ...updatedDescWithTextAndParent];
+        const updatedGrouped = new Map<string, GroupedItems>();
+
+        for (const { rem, text, parent, parentText, type } of allUpdatedItems) {
+            if (parent) {
+                const parentId = parent._id;
+                if (!updatedGrouped.has(parentId)) {
+                    updatedGrouped.set(parentId, { parent, parentText, items: [] });
+                }
+                updatedGrouped.get(parentId)!.items.push({ rem, text, type });
+            }
+        }
+
+        setGroupedItems(updatedGrouped);
+        plugin.window.closeFloatingWidget("implement_widget");
+    };
+
+    if (!focusedRem) return <div></div>;
+
+    return (
+        <div
+            style={{
+                height: '100%',           // Fill the sidebar's height
+                width: '100%',
+                boxSizing: 'border-box',
+                display: 'flex',
+                flexDirection: 'column'
+            }}
+        >
+            {loading ? (
+                <div>Loading...</div>
+            ) : (
+            <div>
+                <div style={{ marginBottom: '10px' }}>{currentRem}</div>
+                <div
+                    style={{
+                        maxHeight: 'calc(100vh - 40px)', // Adjust for title and padding
+                        overflowY: 'auto',            // Enable scrollbar
+                        border: '1px solid #ccc',
+                        padding: '10px',
+                        borderRadius: '5px'
+                    }}
+                >
+                    {Array.from(groupedItems.values()).map(({ parent, parentText, items }) => (
+                        <div key={parent._id} style={{ border: '1px solid #ddd', padding: '8px', borderRadius: '4px', marginBottom: '16px' }}>
+                            <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>{parentText}</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {items.map(({ rem, text, type }) => (
+                                    <MyRemNoteButton
+                                        img={type == "property" ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
+                                            : "M5 4a2 2 0 0 0-2 2v1h10.968l-1.9-2.28A2 2 0 0 0 10.532 4H5ZM3 19V9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm11.707-7.707a1 1 0 0 0-1.414 1.414l.293.293H8a1 1 0 1 0 0 2h5.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2Z"}
+                                        key={rem._id}
+                                        text={text}
+                                        onClick={() => handleItemClick(rem, type)}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+            )}
         </div>
     );
 }
