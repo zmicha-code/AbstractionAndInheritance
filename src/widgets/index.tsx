@@ -215,6 +215,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   */
   await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
+    widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
   });
 
   // New command: Implement descriptors

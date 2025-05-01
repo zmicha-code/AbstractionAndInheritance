@@ -1134,7 +1134,7 @@ interface BaseGroup {
               if (!focusedRem) return;
               if (type === "descriptor") await createRemWithReference(plugin, focusedRem, rem);
               else await createPropertyReference(plugin, focusedRem, rem);
-              plugin.window.closeFloatingWidget("implement_widget");
+              //plugin.window.closeFloatingWidget("implement_widget");
             };
           
             return (
