@@ -1131,9 +1131,9 @@ interface BaseGroup {
             }, [displayedRem, plugin]);
           
             const handleClick = async (rem: Rem, type: ItemType) => {
-              if (!focusedRem) return;
-              if (type === "descriptor") await createRemWithReference(plugin, focusedRem, rem);
-              else await createPropertyReference(plugin, focusedRem, rem);
+              if (!displayedRem) return;
+              if (type === "descriptor") await createRemWithReference(plugin, displayedRem, rem);
+              else await createPropertyReference(plugin, displayedRem, rem);
               //plugin.window.closeFloatingWidget("implement_widget");
             };
           
