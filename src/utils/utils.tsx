@@ -6,6 +6,8 @@ export const specialTags = ["Document", "Template Slot", "Tag", "Tags", "Header"
 
 export const specialNames = ["Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Bullet Icon"]; // , "Definition", "Eigenschaften"
 
+export const specialNameParts = ["query:", "contains:"];
+
 // Map RemNote highlight colors to CSS colors
 export const highlightColorMap: { [key: string]: string } = {
   Red: "red",
@@ -704,7 +706,7 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
 
   // DOCUMENT with TAGS. This should never happen. A DOCUMENT should always define a new type and therefore have no parents through tags.
   if (isDocument && tags.length > 0) {
-    await plugin.app.toast('Mistake: DOCUMENT with TAG. (' + await getRemText(plugin, tags[0]) + ")");
+    await plugin.app.toast('Mistake: DOCUMENT with TAG. (' + await getRemText(plugin, rem) + ")");
     //return tags[0];
     return null;
   } 
@@ -714,8 +716,16 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
     return [rem];
 
   // SLOT with TAG.
+  // NEW: We dont use TAGS for inheritance any more
   if(isSlot && tags.length > 0) {
-    return [tags[0]];
+    await plugin.app.toast('Mistake: SLOT with TAG. (' + await getRemText(plugin, rem) + ")");
+    //return [tags[0]];
+    return null
+  }
+
+  if(isSlot && isReferencing) {
+    const referencedRem = (await rem.remsBeingReferenced())[0];
+    return [referencedRem]
   }
 
   // SLOT without TAG: Property of new Type
@@ -741,6 +751,10 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
   // Inherits Type from REF
   if(type === RemType.CONCEPT && isReferencing) {
     const referencedRem = (await rem.remsBeingReferenced())[0];
+
+    if(parent && await isSameBaseType(plugin, referencedRem, parent))
+      return [parent, referencedRem]
+
     return [referencedRem];
   }
   
@@ -852,7 +866,7 @@ async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]):
 
 // Function to get the ancestor lineage as a string
 // TODO: Use getAncestorLineage
-export async function getAncestorLineageString(plugin: RNPlugin, rem: Rem): Promise<string> {
+export async function getAncestorLineageString_(plugin: RNPlugin, rem: Rem): Promise<string> {
   //const lineage: Rem[] = [rem];
   const lineage: Rem[] = [];
   const visited = new Set<string>([rem._id]); // Track visited Rem IDs
@@ -878,6 +892,28 @@ export async function getAncestorLineageString(plugin: RNPlugin, rem: Rem): Prom
   return texts.join(' -> ');
 }
 
+export async function getAncestorLineageString(plugin: RNPlugin, rem: Rem): Promise<string> {
+  const lineages = await getAncestorLineage(plugin, rem);
+  const validLineages = lineages.filter(lineage => lineage.length > 1);
+  const lineageStrings = await Promise.all(validLineages.map(async (lineage) => {
+      const ancestors = lineage.slice(1);
+      const ancestorTexts = await Promise.all(ancestors.map(r => getRemText(plugin, r, true)));
+      return ancestorTexts.join(" -> ");
+  }));
+  return "[Lineage]: " + lineageStrings.join("; [Lineage] :");
+}
+
+export async function getAncestorLineageStrings(plugin: RNPlugin, rem: Rem): Promise<string[]> {
+  const lineages = await getAncestorLineage(plugin, rem);
+  const validLineages = lineages.filter(lineage => lineage.length > 1);
+  const lineageStrings = await Promise.all(validLineages.map(async (lineage) => {
+      const ancestors = lineage.slice(1);
+      const ancestorTexts = await Promise.all(ancestors.map(r => getRemText(plugin, r, true)));
+      return ancestorTexts.join(" -> ");
+  }));
+  return lineageStrings;
+}
+
 export async function getCleanTags(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   const tagRems = await rem.getTagRems();
   const cleanTags: Rem[] = [];
@@ -895,7 +931,10 @@ export async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[
   const cleanChildren: Rem[] = [];
   for (const childRem of childrenRems) {
     const text = await getRemText(plugin, childRem);
-    if (!specialNames.includes(text)) {
+    if (
+      !specialNames.includes(text) && 
+      !specialNameParts.some(part => text.startsWith(part))
+    ) {
       cleanChildren.push(childRem);
     }
   }
@@ -1146,7 +1185,7 @@ async function collectDescriptors(plugin: RNPlugin, rem: Rem, descriptorMap: Map
 
   if (isDescriptor) { // && hasNoTags
     const root = await getDescriptorRoot(plugin, rem);
-    if (await isSameBaseType(plugin, originalRem, rem) && !descriptorMap.has(root._id)) {
+    if ( !descriptorMap.has(root._id)) { // await isSameBaseType(plugin, originalRem, rem) &&
       descriptorMap.set(root._id, rem); // Add only if same base type and not already present
     }
     // Recursively process children

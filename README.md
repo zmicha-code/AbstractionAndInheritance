@@ -1,1 +1,1 @@
-Introduces OOP concepts.
+Introduces OOP concepts. Inheritance is accomplished through Rem Hierarchie and References. Adds a widget that suggests Rem Children based on Inheritance. 

@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RNPlugin, RemType } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 import { RemViewer } from '@remnote/plugin-sdk';
-import { specialTags, getRemText, isReferencingRem, getParentClassType, getAncestorLineageString, getClassProperties, getClassDescriptors } from '../utils/utils';
+import { specialTags, getRemText, isReferencingRem, getParentClassType, getAncestorLineageStrings, getClassProperties, getClassDescriptors } from '../utils/utils';
 
 // Assuming Rem is a type defined elsewhere, e.g., imported from a library
 interface ListComponentProps {
@@ -43,7 +43,7 @@ export function RemInfoWidget() {
     const [referencedRems, setReferencedRems] = useState<Rem[]>([]);
     const [deepReferencedRems, setDeepReferencedRems] = useState<Rem[]>([]);
     const [classType, setClassType] = useState<Rem[]>([]);
-    const [lineage, setLineage] = useState<string>('');
+    const [lineage, setLineage] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -59,7 +59,7 @@ export function RemInfoWidget() {
             setReferencedRems([]);
             setDeepReferencedRems([]);
             setClassType([]);
-            setLineage('');
+            setLineage([]);
             setLoading(true);
 
             const fetchData = async () => {
@@ -88,7 +88,7 @@ export function RemInfoWidget() {
                 focusedRem.deepRemsBeingReferenced(),
                 // TODO: Multiple Lineages
                 getParentClassType(plugin, focusedRem),
-                getAncestorLineageString(plugin, focusedRem)
+                getAncestorLineageStrings(plugin, focusedRem)
                 ]);
 
                 // Update states with new data
@@ -122,7 +122,7 @@ export function RemInfoWidget() {
             setReferencedRems([]);
             setDeepReferencedRems([]);
             setClassType([]);
-            setLineage('');
+            setLineage([]);
             setLoading(false);
         }
     }, [focusedRem, plugin]);
@@ -137,7 +137,12 @@ export function RemInfoWidget() {
         ) : (
         <div>
             <ListComponent title="Parent Types" rems={classType} />
-            <p>Ancestor Lineage: {lineage}</p>
+            <div>
+            <p>Ancestor Lineage:</p>
+                {lineage.map((lin, index) => (
+                <p key={index}>{lin}</p>
+                ))}
+            </div>
             <ListComponent title="Properties" rems={properties} />
             <ListComponent title="Descriptors" rems={descriptors} />
             <ListComponent title="Tags" rems={tags} />
