@@ -189,30 +189,17 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register a sidebar widget.
-  await plugin.app.registerWidget('sample_widget', WidgetLocation.Pane, {
-    dimensions: { height: 'auto', width: '100%' },
-  });
+  //await plugin.app.registerWidget('sample_widget', WidgetLocation.Pane, {
+  //  dimensions: { height: 'auto', width: '100%' },
+  //});
 
-  await plugin.window.openWidgetInPane('sample_widget');
+  //await plugin.window.openWidgetInPane('sample_widget');
 
   // Register a sidebar widget.
-  await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
-    dimensions: { height: 'auto', width: '100%' },
-  });
+  //await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
+  //  dimensions: { height: 'auto', width: '100%' },
+  //});
 
-  // Register 
-  /*
-  await plugin.app.registerWidget(
-    'implement_widget',
-    WidgetLocation.FloatingWidget,
-    {
-      dimensions: {
-        height: 'auto',
-        width: '1000px',
-      },
-    },
-  );
-  */
   await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
     widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",

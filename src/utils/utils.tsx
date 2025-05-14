@@ -959,75 +959,6 @@ export async function hasClassProperty(plugin: RNPlugin, properties: Rem[], prop
   return false;
 }
 
-export async function getClassProperties_(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  const properties: Rem[] = [];
-  const processedTypes = new Set<string>();
-
-  // Get all lineages for the current Rem
-  const lineages = await getAncestorLineage(plugin, rem);
-
-  // Process each lineage
-  for (const lineage of lineages) {
-    for (const currentRem of lineage) {
-      const remChildren = await getCleanChildren(plugin, currentRem);
-
-      for (const c of remChildren) {
-        const cType = await getParentClassType(plugin, c);
-
-        if (!cType || cType.length === 0) continue;
-
-        const typeId = cType[0]._id;
-
-        // If the child's type differs from the current Rem's ID and hasn't been processed
-        //if (!processedTypes.has(typeId)) { // typeId !== currentRem._id && 
-          // If the property is a concept, collect its concept children of the same type
-          if (await isConcept(plugin, c)) {
-            processedTypes.add(typeId);
-            properties.push(c);
-
-            const visited = new Set<string>([c._id]);
-            await collectConceptChildren_(plugin, c, cType[0], properties, visited);
-
-            //
-            if(await isReferencingRem(plugin, c)) {
-              await collectConceptChildren_(plugin, (await c.remsBeingReferenced())[0], cType[0], properties, visited);
-            }
-          }
-        //}
-      }
-    }
-  }
-
-  return properties;
-}
-
-// Helper function to recursively collect concept children with the same type
-async function collectConceptChildren_(plugin: RNPlugin, conceptRem: Rem, typeRem: Rem, properties: Rem[], visited: Set<string>) {
-  const children = await getCleanChildren(plugin, conceptRem);
-  for (const child of children) {
-    if (!visited.has(child._id) && await isConcept(plugin, child)) {
-      //const childType = await getParentClassType(plugin, child);
-      //if (childType && childType.length > 0 && childType[0]._id === typeRem._id) {
-      if(await isSameBaseType(plugin, conceptRem, child)) {
-        properties.push(child);
-        visited.add(child._id);
-        await collectConceptChildren_(plugin, child, typeRem, properties, visited);
-      }
-    }
-
-    // Search deeper descriptors for CONCEPTS of the same type
-    if (!visited.has(child._id) && await isDescriptor(plugin, child)) {
-      //const childType = await getParentClassType(plugin, child);
-      //if (childType && childType.length > 0 && childType[0]._id === typeRem._id) {
-      if(await isSameBaseType(plugin, conceptRem, child)) {
-        //properties.push(child);
-        visited.add(child._id);
-        await collectConceptChildren_(plugin, child, typeRem, properties, visited);
-      }
-    }
-  }
-}
-
 export async function getClassProperties(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   const properties: Rem[] = [];
   const processedTypes = new Set<string>();
@@ -1045,36 +976,27 @@ export async function getClassProperties(plugin: RNPlugin, rem: Rem): Promise<Re
       const remChildren = await getCleanChildren(plugin, currentRem);
 
       for (const c of remChildren) {
-        const cType = await getParentClassType(plugin, c);
+        //const cType = await getParentClassType(plugin, c);
 
-        if (!cType || cType.length === 0) continue;
+        //if (!cType || cType.length === 0) continue;
 
-        const typeId = cType[0]._id;
+        //const typeId = cType[0]._id;
 
-        // Check if any ancestor (reference outside of lineage) references this property. Then use this reference instead.
-        const referencingAncestor = await findReferencingAncestor(plugin, rem, c);
+        if (await isConcept(plugin, c) && !referencedIds.has(c._id)) {
+          //processedTypes.add(typeId);
+          properties.push(c);
 
-        if (referencingAncestor && !referencedIds.has(referencingAncestor._id)) {
-          // Add the referencing ancestor instead of the property
-          if (!processedTypes.has(referencingAncestor._id)) {
-            processedTypes.add(referencingAncestor._id);
-            properties.push(referencingAncestor);
-          }
-        } else {
-          // If no ancestor references it, add the property as before
-          if (await isConcept(plugin, c) && !referencedIds.has(c._id)) {
-            processedTypes.add(typeId);
-            properties.push(c);
+          const visited = new Set<string>([c._id]);
+          await collectConceptChildren(plugin, c, properties, visited, lineage, referencedIds);
 
-            const visited = new Set<string>([c._id]);
-            await collectConceptChildren(plugin, c, properties, visited, lineage, referencedIds);
-
-            if (await isReferencingRem(plugin, c)) {
-              const referencedRem = (await c.remsBeingReferenced())[0];
-              await collectConceptChildren(plugin, referencedRem, properties, visited, lineage, referencedIds);
-            }
+          if (await isReferencingRem(plugin, c)) {
+            const referencedRem = (await c.remsBeingReferenced())[0];
+            await collectConceptChildren(plugin, referencedRem, properties, visited, lineage, referencedIds);
           }
         }
+        // new
+        const visited = new Set<string>([c._id]);
+        await collectConceptChildren(plugin, c, properties, visited, lineage, referencedIds);
       }
     }
   }
@@ -1119,6 +1041,89 @@ async function collectConceptChildren(
     }
   }
 }
+
+/*
+export async function getClassProperties(plugin: RNPlugin, rem: Rem, areConcepts = true): Promise<Rem[]> {
+  const properties: Rem[] = [];
+  const processedTypes = new Set<string>();
+
+  // Get all lineages for the current Rem
+  const lineages = await getAncestorLineage(plugin, rem);
+
+  // Get the list of Rems being referenced by the current Rem once
+  const referencedRems = await rem.remsBeingReferenced();
+  const referencedIds = new Set<string>(referencedRems.map(r => r._id));
+
+  // Process each lineage
+  for (const lineage of lineages) {
+    for (const currentRem of lineage) {
+      const remChildren = await getCleanChildren(plugin, currentRem);
+
+      for (const c of remChildren) {
+        const cType = await getParentClassType(plugin, c);
+
+        if (!cType || cType.length === 0) continue;
+
+        const typeId = cType[0]._id;
+
+        if (((await isConcept(plugin, c) && areConcepts) || (!(await isConcept(plugin, c)) && !areConcepts)) && !referencedIds.has(c._id)) {
+          processedTypes.add(typeId);
+          properties.push(c);
+
+          const visited = new Set<string>([c._id]);
+          await collectConceptChildren(plugin, c, properties, visited, lineage, referencedIds, areConcepts);
+
+          if (await isReferencingRem(plugin, c)) {
+            const referencedRem = (await c.remsBeingReferenced())[0];
+            await collectConceptChildren(plugin, referencedRem, properties, visited, lineage, referencedIds, areConcepts);
+          }
+        }
+      }
+    }
+  }
+
+  return properties;
+}
+
+// Helper function to recursively collect concept children with the same type
+async function collectConceptChildren(
+  plugin: RNPlugin,
+  conceptRem: Rem,
+  properties: Rem[],
+  visited: Set<string>,
+  lineage: Rem[],
+  referencedIds: Set<string>, // Added to check referenced Rems
+  areConcepts: boolean
+) {
+  const children = await getCleanChildren(plugin, conceptRem);
+  for (const child of children) {
+    if (!visited.has(child._id) && ((await isConcept(plugin, child) && areConcepts) || !(await isConcept(plugin, child) && !areConcepts))) {
+      if (await isSameBaseType(plugin, conceptRem, child)) {
+        // Check if any ancestor references this child property
+        const referencingAncestor = await findReferencingAncestor(plugin, conceptRem, child);
+        if (referencingAncestor && !referencedIds.has(referencingAncestor._id)) {
+          if (!visited.has(referencingAncestor._id)) {
+            properties.push(referencingAncestor);
+            visited.add(referencingAncestor._id);
+          }
+        } else if (!referencedIds.has(child._id)) {
+          properties.push(child);
+          visited.add(child._id);
+          await collectConceptChildren(plugin, child, properties, visited, lineage, referencedIds, areConcepts);
+        }
+      }
+    }
+
+    // Search deeper descriptors for CONCEPTS of the same type
+    if (!visited.has(child._id) && await isDescriptor(plugin, child)) {
+      if (await isSameBaseType(plugin, conceptRem, child)) {
+        visited.add(child._id);
+        await collectConceptChildren(plugin, child, properties, visited, lineage, referencedIds, areConcepts);
+      }
+    }
+  }
+}
+  */
 
 // Helper function to find if any ancestor in the lineage references the property
 async function findReferencingAncestor(plugin: RNPlugin, rem: Rem, property: Rem): Promise<Rem | undefined> {
@@ -1179,20 +1184,57 @@ export async function getClassDescriptors(plugin: RNPlugin, rem: Rem): Promise<R
   return Array.from(descriptorMap.values());
 }
 
+async function hasLayer(plugin: RNPlugin, rem: Rem, layer: Rem): Promise<boolean> {
+  // Get all lineages from the given rem to its ancestors
+  const lineages = await getAncestorLineage(plugin, rem);
+  
+  // Collect unique ancestors, excluding the rem itself
+  const ancestorsSet = new Set<Rem>();
+  for (const lineage of lineages) {
+    for (let i = 1; i < lineage.length; i++) {
+      ancestorsSet.add(lineage[i]);
+    }
+  }
+  const ancestors = Array.from(ancestorsSet);
+  
+  // Fetch children of all ancestors concurrently
+  const childrenPromises = ancestors.map(ancestor => getCleanChildren(plugin, ancestor));
+  const childrenArrays = await Promise.all(childrenPromises);
+  const allChildren = childrenArrays.flat();
+  
+  // Check if any child has the same base type as layer, concurrently
+  const checks = allChildren.map(child => isSameBaseType(plugin, child, layer));
+  const results = await Promise.all(checks);
+  
+  // Return true if any child matches, false otherwise
+  return results.some(result => result);
+}
+
 async function collectDescriptors(plugin: RNPlugin, rem: Rem, descriptorMap: Map<string, Rem>, originalRem: Rem) {
   const isDescriptor = await rem.getType() == RemType.DESCRIPTOR;
   //const hasNoTags = (await getCleanTags(plugin, rem)).length == 0;
 
   if (isDescriptor) { // && hasNoTags
     const root = await getDescriptorRoot(plugin, rem);
-    if ( !descriptorMap.has(root._id)) { // await isSameBaseType(plugin, originalRem, rem) &&
-      descriptorMap.set(root._id, rem); // Add only if same base type and not already present
+    if (!descriptorMap.has(root._id)) { // await isSameBaseType(plugin, originalRem, rem) &&
+      //console.log("Attempting to Add: " + await getRemText(plugin, rem) + "(" + await getRemText(plugin, await getBaseType(plugin, rem)) + ")");
+
+      if(await hasLayer(plugin, originalRem, rem)) {
+        //console.log("Success: " + await getRemText(plugin, originalRem) + " has layer " + await getRemText(plugin, await getBaseType(plugin, rem)));
+        descriptorMap.set(root._id, rem); // Add only if same base type and not already present
+      }
+      //else 
+      //  console.log(await getRemText(plugin, originalRem) + " has no layer " + await getRemText(plugin, await getBaseType(plugin, rem)));
+
+      // Recursively process children
+      const children = await getCleanChildren(plugin, rem);
+      for (const child of children) {
+        //if(await isSameBaseType(plugin, originalRem, child) || await isSameBaseType(plugin, rem, child))
+        await collectDescriptors(plugin, child, descriptorMap, originalRem);
+      }
     }
-    // Recursively process children
-    const children = await getCleanChildren(plugin, rem);
-    for (const child of children) {
-      await collectDescriptors(plugin, child, descriptorMap, originalRem);
-    }
+
+    // Recurse call was here for some reason
   }
 }
 
