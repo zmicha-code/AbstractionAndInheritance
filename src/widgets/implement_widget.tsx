@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
-import { getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings} from '../utils/utils';
+import { getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData} from '../utils/utils';
 import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // Define interface for descriptor items
@@ -551,6 +551,7 @@ export function ImplementWidget_DescriptorGrouping() {
 }
 
 // Item category
+/*
 type ItemType = "property" | "descriptor";
 
 // Nested grouping structure: parent rem -> base type -> items
@@ -568,561 +569,32 @@ interface BaseGroup {
   baseParentText?: string;
   parents: Map<string, ParentGroup>;
 }
+  */
 
-export function ImplementWidget__() {
-  const plugin = usePlugin() as RNPlugin;
-  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
-  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
-  const [groupedItems, setGroupedItems] = useState<Array<{ depth: number; group: BaseGroup }>>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [collapsedBases, setCollapsedBases] = useState<Set<string>>(new Set());
-  const [collapsedParents, setCollapsedParents] = useState<{ [baseId: string]: string[] }>({});
-  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
+type ItemType = "property" | "descriptor";
 
-  const focusedRem = useTracker(async (reactPlugin) => {
-    return await reactPlugin.focus.getFocusedRem();
-  });
-
-  const toggleBaseCollapse = (baseId: string) => {
-    setCollapsedBases(prev => {
-      const next = new Set(prev);
-      if (next.has(baseId)) next.delete(baseId);
-      else next.add(baseId);
-      return next;
-    });
-  };
-
-  const toggleParentCollapse = (baseId: string, parentId: string) => {
-    setCollapsedParents(prev => {
-      const baseCollapsed = prev[baseId] || [];
-      if (baseCollapsed.includes(parentId)) {
-        return { ...prev, [baseId]: baseCollapsed.filter(id => id !== parentId) };
-      } else {
-        return { ...prev, [baseId]: [...baseCollapsed, parentId] };
-      }
-    });
-  };
-
-  const buildGroupedItems = async (root: Rem) => {
-    const children = await getCleanChildren(plugin, root);
-    const existingNames = new Set(await Promise.all(children.map(c => getRemText(plugin, c))));
-    existingNames.add("Collapse Tag Configure Options");
-
-    const [props, descs] = await Promise.all([
-      getClassProperties(plugin, root),
-      getClassDescriptors(plugin, root),
-    ]);
-
-    const filterRems = async (list: Rem[]) => {
-      const texts = await Promise.all(list.map(r => getRemText(plugin, r)));
-      const isDescendants = await Promise.all(list.map(r => isRemAncestor(plugin, root, r)));
-      return list.filter((r, index) => 
-        r._id !== root._id && !existingNames.has(texts[index]) && !isDescendants[index]
-      );
-    };
-
-    const filtered = [
-      ...(await filterRems(props)).map(r => ({ rem: r, type: "property" as ItemType })),
-      ...(await filterRems(descs)).map(r => ({ rem: r, type: "descriptor" as ItemType })),
-    ];
-
-    const allItems = await Promise.all(filtered.map(async ({ rem, type }) => {
-      const [text, base, parent] = await Promise.all([
-        getRemText(plugin, rem),
-        getBaseType(plugin, rem),
-        rem.getParentRem()
-      ]);
-      const baseText = await getRemText(plugin, base);
-      const baseParent = await base.getParentRem();
-      const baseParentText = baseParent ? await getRemText(plugin, baseParent) : baseText;
-      const parentText = parent ? await getRemText(plugin, parent) : "Base";
-      return { rem, text, type, base, baseText, baseParent, baseParentText, parent, parentText };
-    }));
-
-    const nested = new Map<string, BaseGroup>();
-    for (const item of allItems) {
-      const { base, baseText, baseParent, baseParentText, parent, parentText, rem, text, type } = item;
-      if (!nested.has(base._id)) {
-        nested.set(base._id, { base, baseText, baseParent, baseParentText, parents: new Map() });
-      }
-      const bg = nested.get(base._id)!;
-      if (parent) {
-        if (!bg.parents.has(parent._id)) bg.parents.set(parent._id, { parent, parentText, items: [] });
-        bg.parents.get(parent._id)!.items.push({ rem, text, type });
-      }
-    }
-
-    for (const bg of nested.values()) {
-      bg.parents.forEach(pg => {
-        const seen = new Set<string>();
-        pg.items = pg.items.filter(({ rem }) => !seen.has(rem._id) && seen.add(rem._id));
-      });
-      const arr = Array.from(bg.parents.entries());
-      const withDepth = await Promise.all(arr.map(async ([pid, pg]) => {
-        let depth = 0;
-        let curr = pg.parent;
-        while (curr && curr._id !== bg.base._id) { 
-          curr = await curr.getParentRem() as Rem; 
-          depth++; 
-        }
-        return { pid, pg, depth };
-      }));
-
-      withDepth.sort((a, b) => b.depth - a.depth);
-      bg.parents = new Map(withDepth.map(({ pid, pg }) => [pid, pg]));
-    }
-
-    return nested;
-  };
-
-  useEffect(() => {
-    const init = async () => {
-      if (!displayedRem) return;
-      setLoading(true);
-      const [txt, curBase] = await Promise.all([
-        getRemText(plugin, displayedRem),
-        getBaseType(plugin, displayedRem)
-      ]);
-      const ancestorStr = (await getAncestorLineageStrings(plugin, displayedRem))[0];
-      ancestorStr ? setCurrentRem(txt + " -> " + ancestorStr) : setCurrentRem(txt);
-      const baseText = await getRemText(plugin, curBase);
-      setCurrentRemBase(baseText);
-
-      const [nested, lineages] = await Promise.all([
-        buildGroupedItems(displayedRem),
-        getAncestorLineage(plugin, displayedRem)
-      ]);
-
-      const arr = await Promise.all(
-        Array.from(nested.values()).map(async (bg) => {
-          let definingDepth = -1;
-          let definingAncestor: Rem | undefined;
-
-          for (const lineage of lineages) {
-            for (let i = lineage.length - 1; i >= 0; i--) {
-              const ancestor = lineage[i];
-              const children = await getCleanChildren(plugin, ancestor);
-              const hasChildWithBase = (await Promise.all(
-                children.map(async (child) => {
-                  const childBase = await getBaseType(plugin, child);
-                  return childBase && childBase._id === bg.base._id;
-                })
-              )).some(Boolean);
-
-              if (hasChildWithBase) {
-                definingAncestor = ancestor;
-                definingDepth = lineage.length - 1 - i;
-                break;
-              }
-            }
-            if (definingAncestor) break;
-          }
-
-          if (definingAncestor) {
-            bg.baseParent = definingAncestor;
-            bg.baseParentText = await getRemText(plugin, definingAncestor);
-          } else {
-            bg.baseParent = undefined;
-            bg.baseParentText = "Other";
-            definingDepth = lineages[0].length;
-          }
-
-          return { depth: definingDepth, bg };
-        })
-      );
-
-      arr.sort((a, b) => a.depth - b.depth);
-      setGroupedItems(arr.map(({ depth, bg }) => ({ depth, group: bg })));
-      const initialCollapsedParents = Object.fromEntries(
-        arr.map(({ bg }) => [bg.base._id, Array.from(bg.parents.keys())])
-      );
-      setCollapsedParents(initialCollapsedParents);
-      setCollapsedBases(new Set(arr.map(e => e.bg.base._id)));
-      setLoading(false);
-    };
-    init();
-  }, [displayedRem, plugin]);
-
-  const handleClick = async (rem: Rem, type: ItemType) => {
-    if (!displayedRem) return;
-    if (type === "descriptor") await createRemWithReference(plugin, displayedRem, rem);
-    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
-  };
-
-  return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
-      <div style={{ marginBottom: 8 }}>
-        <MyRemNoteButton text="Load Current Rem" onClick={() => setDisplayedRem(focusedRem)} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-      </div>
-      {displayedRem ? (
-        loading ? (
-          <div>Loading...</div>
-        ) : (
-          <>
-            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
-              {currentRem}
-            </div>
-            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
-              {(() => {
-                const byDepth = new Map<number, BaseGroup[]>();
-                groupedItems.forEach(({ depth, group }) => {
-                  if (!byDepth.has(depth)) byDepth.set(depth, []);
-                  byDepth.get(depth)!.push(group);
-                });
-                byDepth.forEach((groups, depth) => {
-                  groups.sort((a, b) => {
-                    const getPriority = (bg: BaseGroup) => {
-                      if (bg.base._id === bg.baseParent?._id) return 0;
-                      return 2;
-                    };
-                    return getPriority(a) - getPriority(b);
-                  });
-                });
-                return Array.from(byDepth.entries()).map(([depth, groupsAtDepth]) => (
-                  <div key={depth} style={{ marginBottom: 16, border: "1px dashed #ccc", padding: 8, borderRadius: 4 }}>
-                    <div style={{ textAlign: "center", fontWeight: "bold", marginBottom: 8 }}>
-                      {groupsAtDepth[0].baseParentText || "Other"}
-                    </div>
-                    {groupsAtDepth.map(bg => {
-                      const collapsed = collapsedBases.has(bg.base._id);
-                      return (
-                        <div key={bg.base._id} style={{ marginBottom: 12, border: "1px solid #ddd", padding: 8, borderRadius: 4 }}>
-                          <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-                            <button onClick={() => toggleBaseCollapse(bg.base._id)} style={{ marginRight: 8 }}>
-                              {collapsed ? "+" : "-"}
-                            </button>
-                            <span style={{ fontWeight: "bold" }}>{bg.baseText}</span>
-                          </div>
-                          {!collapsed &&
-                            Array.from(bg.parents.values()).map(pg => {
-                              const isCollapsed = collapsedParents[bg.base._id]?.includes(pg.parent._id) || false;
-                              return (
-                                <div key={pg.parent._id} style={{ marginLeft: 12, marginBottom: 12 }}>
-                                  <div style={{ display: "flex", alignItems: "center" }}>
-                                    <button
-                                      onClick={() => toggleParentCollapse(bg.base._id, pg.parent._id)}
-                                      style={{ marginRight: 8 }}
-                                    >
-                                      {isCollapsed ? "+" : "-"}
-                                    </button>
-                                    <div style={{ fontStyle: "italic" }}>{pg.parentText}</div>
-                                  </div>
-                                  {!isCollapsed && (
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-                                      {pg.items.map(it => (
-                                        <MyRemNoteButton
-                                          key={it.rem._id}
-                                          text={it.text}
-                                          img={
-                                            it.type === "property"
-                                              ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
-                                              : "M5 4a2 2 0 0 0-2 2v1h10.968l-1.9-2.28A2 2 0 0 0 10.532 4H5ZM3 19V9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm11.707-7.707a1 1 0 0 0-1.414 1.414l.293.293H8a1 1 0 1 0 0 2h5.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2Z"
-                                          }
-                                          onClick={() => handleClick(it.rem, it.type)}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ));
-              })()}
-            </div>
-          </>
-        )
-      ) : (
-        <div>No Rem loaded. Click the button to load the current Rem.</div>
-      )}
-    </div>
-  );
+interface BaseGroup {
+  base: Rem;
+  baseText: string;
+  baseParent: Rem | undefined;
+  baseParentText: string;
+  parents: Map<string, ParentGroup>;
 }
 
+interface ParentGroup {
+  key: string;
+  parentText: string;
+  items: Array<{
+    rem: Rem;
+    text: string;
+    type: ItemType;
+  }>;
+  isDescriptor: boolean;
+  parent: Rem | undefined;
+}
+
+/*
 export function ImplementWidget_() {
-  const plugin = usePlugin() as RNPlugin;
-  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
-  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
-  const [groupedItems, setGroupedItems] = useState<Array<{ depth: number; group: BaseGroup }>>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [collapsedBases, setCollapsedBases] = useState<Set<string>>(new Set());
-  const [collapsedParents, setCollapsedParents] = useState<{ [baseId: string]: string[] }>({});
-  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
-
-  const focusedRem = useTracker(async (reactPlugin) => {
-    return await reactPlugin.focus.getFocusedRem();
-  });
-
-  const toggleBaseCollapse = (baseId: string) => {
-    setCollapsedBases(prev => {
-      const next = new Set(prev);
-      if (next.has(baseId)) next.delete(baseId);
-      else next.add(baseId);
-      return next;
-    });
-  };
-
-  const toggleParentCollapse = (baseId: string, parentId: string) => {
-    setCollapsedParents(prev => {
-      const baseCollapsed = prev[baseId] || [];
-      if (baseCollapsed.includes(parentId)) {
-        return { ...prev, [baseId]: baseCollapsed.filter(id => id !== parentId) };
-      } else {
-        return { ...prev, [baseId]: [...baseCollapsed, parentId] };
-      }
-    });
-  };
-
-  const filterRems = async (list: Rem[], root: Rem, existingNames: Set<string>) => {
-    const texts = await Promise.all(list.map(r => getRemText(plugin, r)));
-    const isDescendants = await Promise.all(list.map(r => isRemAncestor(plugin, root, r)));
-    return list.filter((r, index) => 
-      r._id !== root._id && !existingNames.has(texts[index]) && !isDescendants[index]
-    );
-  };
-
-  const createAllItems = async (filtered: Array<{ rem: Rem, type: ItemType }>) => {
-    return await Promise.all(filtered.map(async ({ rem, type }) => {
-      const [text, base, parent] = await Promise.all([
-        getRemText(plugin, rem),
-        getBaseType(plugin, rem),
-        rem.getParentRem()
-      ]);
-      const baseText = await getRemText(plugin, base);
-      const baseParent = await base.getParentRem();
-      const baseParentText = baseParent ? await getRemText(plugin, baseParent) : baseText;
-      const parentText = parent ? await getRemText(plugin, parent) : "Base";
-      return { rem, text, type, base, baseText, baseParent, baseParentText, parent, parentText };
-    }));
-  };
-
-  const createNestedMap = (allItems: Array<any>) => {
-    const nested = new Map<string, BaseGroup>();
-    for (const item of allItems) {
-      const { base, baseText, baseParent, baseParentText, parent, parentText, rem, text, type } = item;
-      if (!nested.has(base._id)) {
-        nested.set(base._id, { base, baseText, baseParent, baseParentText, parents: new Map() });
-      }
-      const bg = nested.get(base._id)!;
-      if (parent) {
-        if (!bg.parents.has(parent._id)) bg.parents.set(parent._id, { parent, parentText, items: [] });
-        bg.parents.get(parent._id)!.items.push({ rem, text, type });
-      }
-    }
-    return nested;
-  };
-
-  const sortParentGroups = async (bg: BaseGroup) => {
-    bg.parents.forEach(pg => {
-      const seen = new Set<string>();
-      pg.items = pg.items.filter(({ rem }) => !seen.has(rem._id) && seen.add(rem._id));
-    });
-    const arr = Array.from(bg.parents.entries());
-    const withDepth = await Promise.all(arr.map(async ([pid, pg]) => {
-      let depth = 0;
-      let curr = pg.parent;
-      while (curr && curr._id !== bg.base._id) { 
-        curr = await curr.getParentRem() as Rem; 
-        depth++; 
-      }
-      return { pid, pg, depth };
-    }));
-    withDepth.sort((a, b) => b.depth - a.depth);
-    bg.parents = new Map(withDepth.map(({ pid, pg }) => [pid, pg]));
-  };
-
-  const sortBaseGroups = async (nested: Map<string, BaseGroup>, lineages: Array<Rem[]>) => {
-    const arr = await Promise.all(
-      Array.from(nested.values()).map(async (bg) => {
-        let definingDepth = -1;
-        let definingAncestor: Rem | undefined;
-        for (const lineage of lineages) {
-          for (let i = lineage.length - 1; i >= 0; i--) {
-            const ancestor = lineage[i];
-            const children = await getCleanChildren(plugin, ancestor);
-            const hasChildWithBase = (await Promise.all(
-              children.map(async (child) => {
-                const childBase = await getBaseType(plugin, child);
-                return childBase && childBase._id === bg.base._id;
-              })
-            )).some(Boolean);
-            if (hasChildWithBase) {
-              definingAncestor = ancestor;
-              definingDepth = lineage.length - 1 - i;
-              break;
-            }
-          }
-          if (definingAncestor) break;
-        }
-        if (definingAncestor) {
-          bg.baseParent = definingAncestor;
-          bg.baseParentText = await getRemText(plugin, definingAncestor);
-        } else {
-          bg.baseParent = undefined;
-          bg.baseParentText = "Other";
-          definingDepth = lineages[0].length;
-        }
-        return { depth: definingDepth, bg };
-      })
-    );
-    arr.sort((a, b) => a.depth - b.depth);
-    return arr.map(({ depth, bg }) => ({ depth, group: bg }));
-  };
-
-  const buildGroupedItems = async (root: Rem) => {
-    const children = await getCleanChildren(plugin, root);
-    const existingNames = new Set(await Promise.all(children.map(c => getRemText(plugin, c))));
-    existingNames.add("Collapse Tag Configure Options");
-    const [props, descs] = await Promise.all([
-      getClassProperties(plugin, root),
-      getClassDescriptors(plugin, root),
-    ]);
-    const filteredProps = await filterRems(props, root, existingNames);
-    const filteredDescs = await filterRems(descs, root, existingNames);
-    const filtered = [
-      ...filteredProps.map(r => ({ rem: r, type: "property" as ItemType })),
-      ...filteredDescs.map(r => ({ rem: r, type: "descriptor" as ItemType })),
-    ];
-    const allItems = await createAllItems(filtered);
-    const nested = createNestedMap(allItems);
-    for (const bg of nested.values()) {
-      await sortParentGroups(bg);
-    }
-    return nested;
-  };
-
-  const initializeWidget = async () => {
-    if (!displayedRem) return;
-    setLoading(true);
-    const [txt, curBase] = await Promise.all([
-      getRemText(plugin, displayedRem),
-      getBaseType(plugin, displayedRem)
-    ]);
-    const ancestorStr = (await getAncestorLineageStrings(plugin, displayedRem))[0];
-    ancestorStr ? setCurrentRem(txt + " -> " + ancestorStr) : setCurrentRem(txt);
-    const baseText = await getRemText(plugin, curBase);
-    setCurrentRemBase(baseText);
-    const [nested, lineages] = await Promise.all([
-      buildGroupedItems(displayedRem),
-      getAncestorLineage(plugin, displayedRem)
-    ]);
-    const sortedGroupedItems = await sortBaseGroups(nested, lineages);
-    setGroupedItems(sortedGroupedItems);
-    const initialCollapsedParents = Object.fromEntries(
-      sortedGroupedItems.map(({ group }) => [group.base._id, Array.from(group.parents.keys())])
-    );
-    setCollapsedParents(initialCollapsedParents);
-    setCollapsedBases(new Set(sortedGroupedItems.map(e => e.group.base._id)));
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    initializeWidget();
-  }, [displayedRem, plugin]);
-
-  const handleClick = async (rem: Rem, type: ItemType) => {
-    if (!displayedRem) return;
-    if (type === "descriptor") await createRemWithReference(plugin, displayedRem, rem);
-    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
-  };
-
-  return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
-      <div style={{ marginBottom: 8 }}>
-        <MyRemNoteButton text="Load Current Rem" onClick={() => setDisplayedRem(focusedRem)} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-      </div>
-      {displayedRem ? (
-        loading ? (
-          <div>Loading...</div>
-        ) : (
-          <>
-            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
-              {currentRem}
-            </div>
-            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
-              {(() => {
-                const byDepth = new Map<number, BaseGroup[]>();
-                groupedItems.forEach(({ depth, group }) => {
-                  if (!byDepth.has(depth)) byDepth.set(depth, []);
-                  byDepth.get(depth)!.push(group);
-                });
-                byDepth.forEach((groups, depth) => {
-                  groups.sort((a, b) => {
-                    const getPriority = (bg: BaseGroup) => {
-                      if (bg.base._id === bg.baseParent?._id) return 0;
-                      return 2;
-                    };
-                    return getPriority(a) - getPriority(b);
-                  });
-                });
-                return Array.from(byDepth.entries()).map(([depth, groupsAtDepth]) => (
-                  <div key={depth} style={{ marginBottom: 16, border: "1px dashed #ccc", padding: 8, borderRadius: 4 }}>
-                    <div style={{ textAlign: "center", fontWeight: "bold", marginBottom: 8 }}>
-                      {groupsAtDepth[0].baseParentText || "Other"}
-                    </div>
-                    {groupsAtDepth.map(bg => {
-                      const collapsed = collapsedBases.has(bg.base._id);
-                      return (
-                        <div key={bg.base._id} style={{ marginBottom: 12, border: "1px solid #ddd", padding: 8, borderRadius: 4 }}>
-                          <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-                            <button onClick={() => toggleBaseCollapse(bg.base._id)} style={{ marginRight: 8 }}>
-                              {collapsed ? "+" : "-"}
-                            </button>
-                            <span style={{ fontWeight: "bold" }}>{bg.baseText}</span>
-                          </div>
-                          {!collapsed &&
-                            Array.from(bg.parents.values()).map(pg => {
-                              const isCollapsed = collapsedParents[bg.base._id]?.includes(pg.parent._id) || false;
-                              return (
-                                <div key={pg.parent._id} style={{ marginLeft: 12, marginBottom: 12 }}>
-                                  <div style={{ display: "flex", alignItems: "center" }}>
-                                    <button
-                                      onClick={() => toggleParentCollapse(bg.base._id, pg.parent._id)}
-                                      style={{ marginRight: 8 }}
-                                    >
-                                      {isCollapsed ? "+" : "-"}
-                                    </button>
-                                    <div style={{ fontStyle: "italic" }}>{pg.parentText}</div>
-                                  </div>
-                                  {!isCollapsed && (
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-                                      {pg.items.map(it => (
-                                        <MyRemNoteButton
-                                          key={it.rem._id}
-                                          text={it.text}
-                                          img={
-                                            it.type === "property"
-                                              ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
-                                              : "M5 4a2 2 0 0 0-2 2v1h10.968l-1.9-2.28A2 2 0 0 0 10.532 4H5ZM3 19V9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm11.707-7.707a1 1 0 0 0-1.414 1.414l.293.293H8a1 1 0 1 0 0 2h5.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2Z"
-                                          }
-                                          onClick={() => handleClick(it.rem, it.type)}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ));
-              })()}
-            </div>
-          </>
-        )
-      ) : (
-        <div>No Rem loaded. Click the button to load the current Rem.</div>
-      )}
-    </div>
-  );
-}
-
-export function ImplementWidget() {
   const plugin = usePlugin() as RNPlugin;
   const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
   const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
@@ -1267,6 +739,8 @@ export function ImplementWidget() {
   };
 
   const buildGroupedItems = async (root: Rem) => {
+
+    //console.log("Layers: " + (await getLayers(plugin, root)).length);
     const children = await getCleanChildren(plugin, root);
     const existingNames = new Set(await Promise.all(children.map(c => getRemText(plugin, c))));
     existingNames.add("Collapse Tag Configure Options");
@@ -1386,6 +860,293 @@ export function ImplementWidget() {
                                             it.type === "property"
                                               ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
                                               : "M5 4a2 2 0 0 0-2 2v1h10.968l-1.9-2.28A2 2 0 0 0 10.532 4H5ZM3 19V9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm11.707-7.707a1 1 0 0 0-1.414 1.414l.293.293H8a1 1 0 1 0 0 2h5.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2Z"
+                                          }
+                                          onClick={() => handleClick(it.rem, it.type)}
+                                        />
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
+            </div>
+          </>
+        )
+      ) : (
+        <div>No Rem loaded. Click the button to load the current Rem.</div>
+      )}
+    </div>
+  );
+}
+*/
+
+export function ImplementWidget() {
+  const plugin = usePlugin() as RNPlugin;
+  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
+  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
+  const [groupedItems, setGroupedItems] = useState<Array<{ depth: number; group: BaseGroup }>>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [collapsedBases, setCollapsedBases] = useState<Set<string>>(new Set());
+  const [collapsedParents, setCollapsedParents] = useState<{ [baseId: string]: string[] }>({});
+  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
+
+  const focusedRem = useTracker(async (reactPlugin) => {
+    return await reactPlugin.focus.getFocusedRem();
+  });
+
+  const toggleBaseCollapse = (baseId: string) => {
+    setCollapsedBases(prev => {
+      const next = new Set(prev);
+      if (next.has(baseId)) next.delete(baseId);
+      else next.add(baseId);
+      return next;
+    });
+  };
+
+  const toggleParentCollapse = (baseId: string, key: string) => {
+    setCollapsedParents(prev => {
+      const baseCollapsed = prev[baseId] || [];
+      if (baseCollapsed.includes(key)) {
+        return { ...prev, [baseId]: baseCollapsed.filter(k => k !== key) };
+      } else {
+        return { ...prev, [baseId]: [...baseCollapsed, key] };
+      }
+    });
+  };
+
+  const filterRems = async (list: Rem[], root: Rem, existingNames: Set<string>) => {
+    const texts = await Promise.all(list.map(r => getRemText(plugin, r)));
+    const isDescendants = await Promise.all(list.map(r => isRemAncestor(plugin, root, r)));
+    return list.filter((r, index) => 
+      r._id !== root._id && !existingNames.has(texts[index]) && !isDescendants[index]
+    );
+  };
+
+  const createAllItems = async (filtered: Array<{ rem: Rem, type: ItemType }>) => {
+    return await Promise.all(filtered.map(async ({ rem, type }) => {
+      const [text, base, parent] = await Promise.all([
+        getRemText(plugin, rem),
+        getBaseType(plugin, rem),
+        rem.getParentRem()
+      ]);
+      const baseText = await getRemText(plugin, base);
+      const baseParent = await base.getParentRem();
+      const baseParentText = baseParent ? await getRemText(plugin, baseParent) : baseText;
+      const parentText = parent ? await getRemText(plugin, parent) : "Base";
+      const isParentDescriptor = parent ? await parent.getType() === RemType.DESCRIPTOR : false;
+      return { rem, text, type, base, baseText, baseParent, baseParentText, parent, parentText, isParentDescriptor };
+    }));
+  };
+
+  const createNestedMap = (allItems: Array<any>) => {
+    const nested = new Map<string, BaseGroup>();
+    for (const item of allItems) {
+      const { base, baseText, baseParent, baseParentText, parent, parentText, rem, text, type, isParentDescriptor } = item;
+      if (!nested.has(base._id)) {
+        nested.set(base._id, { base, baseText, baseParent, baseParentText, parents: new Map() });
+      }
+      const bg = nested.get(base._id)!;
+      if (parent) {
+        const key = isParentDescriptor ? parentText : parent._id;
+        if (!bg.parents.has(key)) {
+          bg.parents.set(key, { 
+            key, 
+            parentText, 
+            items: [], 
+            isDescriptor: isParentDescriptor, 
+            parent: isParentDescriptor ? undefined : parent 
+          });
+        }
+        bg.parents.get(key)!.items.push({ rem, text, type });
+      }
+    }
+    return nested;
+  };
+
+  const sortParentGroups = (bg: BaseGroup) => {
+    bg.parents.forEach(pg => {
+      const seen = new Set<string>();
+      pg.items = pg.items.filter(({ rem }) => !seen.has(rem._id) && seen.add(rem._id));
+    });
+    const sortedParents = Array.from(bg.parents.entries()).sort((a, b) => a[1].parentText.localeCompare(b[1].parentText));
+    bg.parents = new Map(sortedParents);
+  };
+
+  const sortBaseGroups = async (nested: Map<string, BaseGroup>, lineages: Array<Rem[]>) => {
+
+    const arr = await Promise.all(
+      Array.from(nested.values()).map(async (bg) => {
+        let definingDepth = -1;
+        let definingAncestor: Rem | undefined;
+        for (const lineage of lineages) {
+          for (let i = lineage.length - 1; i >= 0; i--) {
+            const ancestor = lineage[i];
+            const children = await getCleanChildren(plugin, ancestor);
+            const hasChildWithBase = (await Promise.all(
+              children.map(async (child) => {
+                const childBase = await getBaseType(plugin, child);
+                return childBase && childBase._id === bg.base._id;
+              })
+            )).some(Boolean);
+            if (hasChildWithBase) {
+              definingAncestor = ancestor;
+              definingDepth = lineage.length - 1 - i;
+              break;
+            }
+          }
+          if (definingAncestor) break;
+        }
+        if (definingAncestor) {
+          bg.baseParent = definingAncestor;
+          bg.baseParentText = await getRemText(plugin, definingAncestor);
+        } else {
+          bg.baseParent = undefined;
+          bg.baseParentText = " ";//"Other"; // await getRemText(plugin, await getBaseType(plugin, lineages[0][0]))
+          definingDepth = lineages[0].length;
+        }
+        return { depth: definingDepth, bg };
+      })
+    );
+    arr.sort((a, b) => a.depth - b.depth);
+    return arr.map(({ depth, bg }) => ({ depth, group: bg }));
+  };
+
+  const sortGroupsAtDepth = (groups: BaseGroup[]) => {
+    groups.sort((a, b) => {
+      const getPriority = (bg: BaseGroup) => {
+        if (bg.base._id === bg.baseParent?._id) return 0;
+        return 2;
+      };
+      return getPriority(a) - getPriority(b);
+    });
+  };
+
+  const buildGroupedItems = async (root: Rem) => {
+    const children = await getCleanChildren(plugin, root);
+    const existingNames = new Set(await Promise.all(children.map(c => getRemText(plugin, c))));
+    existingNames.add("Collapse Tag Configure Options");
+    //const [props, descs] = await Promise.all([
+    //  getClassProperties(plugin, root),
+    //  getClassDescriptors(plugin, root),
+    //]);
+    const { properties: props, descriptors: descs } = await getInheritedData(plugin, root);
+    
+    const filteredProps = await filterRems(props, root, existingNames);
+    const filteredDescs = await filterRems(descs, root, existingNames);
+    const filtered = [
+      ...filteredProps.map(r => ({ rem: r, type: "property" as ItemType })),
+      ...filteredDescs.map(r => ({ rem: r, type: "descriptor" as ItemType })),
+    ];
+    const allItems = await createAllItems(filtered);
+    const nested = createNestedMap(allItems);
+    for (const bg of nested.values()) {
+      sortParentGroups(bg);
+    }
+    return nested;
+  };
+
+  const initializeWidget = async () => {
+    if (!displayedRem) return;
+    setLoading(true);
+    const [txt, curBase] = await Promise.all([
+      getRemText(plugin, displayedRem),
+      getBaseType(plugin, displayedRem)
+    ]);
+    setCurrentRem(txt)
+    const baseText = await getRemText(plugin, curBase);
+    setCurrentRemBase(baseText);
+    const [nested, lineages] = await Promise.all([
+      buildGroupedItems(displayedRem),
+      getAncestorLineage(plugin, displayedRem)
+    ]);
+    const sortedGroupedItems = await sortBaseGroups(nested, lineages);
+    setGroupedItems(sortedGroupedItems);
+    const initialCollapsedParents = Object.fromEntries(
+      sortedGroupedItems.map(({ group }) => [group.base._id, Array.from(group.parents.keys())])
+    );
+    setCollapsedParents(initialCollapsedParents);
+    setCollapsedBases(new Set(sortedGroupedItems.map(e => e.group.base._id)));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    initializeWidget();
+  }, [displayedRem, plugin]);
+
+  const handleClick = async (rem: Rem, type: ItemType) => {
+    if (!displayedRem) return;
+    if (type === "descriptor") await createRemWithReference(plugin, displayedRem, rem);
+    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
+      <div style={{ marginBottom: 8 }}>
+        <MyRemNoteButton text="Load Current Rem" onClick={() => setDisplayedRem(focusedRem)} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+      </div>
+      {displayedRem ? (
+        loading ? (
+          <div>Loading...</div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
+              {currentRem}
+            </div>
+            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
+              {(() => {
+                const byDepth = new Map<number, BaseGroup[]>();
+                groupedItems.forEach(({ depth, group }) => {
+                  if (!byDepth.has(depth)) byDepth.set(depth, []);
+                  byDepth.get(depth)!.push(group);
+                });
+                byDepth.forEach((groups, depth) => {
+                  sortGroupsAtDepth(groups);
+                });
+                return Array.from(byDepth.entries()).reverse().map(([depth, groupsAtDepth]) => (
+                  <div key={depth} style={{ marginBottom: 16, border: "1px dashed #ccc", padding: 8, borderRadius: 4 }}>
+                    <div style={{ textAlign: "center", fontWeight: "bold", marginBottom: 8 }}>
+                      {groupsAtDepth[0].baseParentText || "Other"}
+                    </div>
+                    {groupsAtDepth.map(bg => {
+                      const collapsed = collapsedBases.has(bg.base._id);
+                      return (
+                        <div key={bg.base._id} style={{ marginBottom: 12, border: "1px solid #ddd", padding: 8, borderRadius: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                            <button onClick={() => toggleBaseCollapse(bg.base._id)} style={{ marginRight: 8 }}>
+                              {collapsed ? "+" : "-"}
+                            </button>
+                            <span style={{ fontWeight: "bold" }}>{bg.baseText}</span>
+                          </div>
+                          {!collapsed &&
+                            Array.from(bg.parents.values()).map(pg => {
+                              const isCollapsed = collapsedParents[bg.base._id]?.includes(pg.key) || false;
+                              return (
+                                <div key={pg.key} style={{ marginLeft: 12, marginBottom: 12 }}>
+                                  <div style={{ display: "flex", alignItems: "center" }}>
+                                    <button
+                                      onClick={() => toggleParentCollapse(bg.base._id, pg.key)}
+                                      style={{ marginRight: 8 }}
+                                    >
+                                      {isCollapsed ? "+" : "-"}
+                                    </button>
+                                    <div style={{ fontStyle: "italic" }}>{pg.parentText}</div>
+                                  </div>
+                                  {!isCollapsed && (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+                                      {pg.items.map(it => (
+                                        <MyRemNoteButton
+                                          key={it.rem._id}
+                                          text={it.text}
+                                          img={
+                                            it.type === "property"
+                                              ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
+                                              : "M5 4a2 2 0 0 0-2 2v1h10.968l-1.9-2.28A2 2 0 0 0 10.532 4H5ZM3 19V9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Zm11.707-7.707a1 1 0 0 0-1.414 1.414l.293.293H8a1 1 0 0 0 0 2h5.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2Z"
                                           }
                                           onClick={() => handleClick(it.rem, it.type)}
                                         />

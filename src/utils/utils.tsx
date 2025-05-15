@@ -941,6 +941,38 @@ export async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[
   return cleanChildren;
 }
 
+export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  // Fetch direct children and referencing Rems
+  const childrenRems = await rem.getChildrenRem();
+  const referencingRems = await rem.remsReferencingThis();
+  const allRems = [...childrenRems, ...referencingRems];
+
+  // Remove duplicates based on Rem _id
+  const uniqueRemsMap = new Map<string, Rem>();
+  for (const r of allRems) {
+    if (!uniqueRemsMap.has(r._id)) {
+      uniqueRemsMap.set(r._id, r);
+    }
+  }
+  const uniqueRems = Array.from(uniqueRemsMap.values());
+
+  // Fetch texts concurrently for efficiency
+  const texts = await Promise.all(uniqueRems.map(r => getRemText(plugin, r)));
+
+  // Apply the same filtering as getCleanChildren
+  const cleanRems: Rem[] = [];
+  for (let i = 0; i < uniqueRems.length; i++) {
+    const text = texts[i];
+    if (
+      !specialNames.includes(text) &&
+      !specialNameParts.some(part => text.startsWith(part))
+    ) {
+      cleanRems.push(uniqueRems[i]);
+    }
+  }
+  return cleanRems;
+}
+
 export async function hasClassProperty(plugin: RNPlugin, properties: Rem[], property: Rem): Promise<boolean> {
 
   const classType = await getParentClassType(plugin, property);
@@ -973,7 +1005,7 @@ export async function getClassProperties(plugin: RNPlugin, rem: Rem): Promise<Re
   // Process each lineage
   for (const lineage of lineages) {
     for (const currentRem of lineage) {
-      const remChildren = await getCleanChildren(plugin, currentRem);
+      const remChildren = await getCleanChildrenAll(plugin, currentRem);
 
       for (const c of remChildren) {
         //const cType = await getParentClassType(plugin, c);
@@ -1013,7 +1045,7 @@ async function collectConceptChildren(
   lineage: Rem[],
   referencedIds: Set<string> // Added to check referenced Rems
 ) {
-  const children = await getCleanChildren(plugin, conceptRem);
+  const children = await getCleanChildrenAll(plugin, conceptRem);
   for (const child of children) {
     if (!visited.has(child._id) && await isConcept(plugin, child)) {
       if (await isSameBaseType(plugin, conceptRem, child)) {
@@ -1125,12 +1157,263 @@ async function collectConceptChildren(
 }
   */
 
+// ####################################
+type InheritedData = {
+  descriptors: Rem[];
+  properties: Rem[];
+};
+
+export async function getInheritedData(plugin: RNPlugin, rem: Rem): Promise<InheritedData> {
+  const descriptorMap = new Map<string, Rem>();
+  const properties: Rem[] = [];
+  const visitedProperties = new Set<string>();
+  const visitedDescriptors = new Set<string>();
+
+  const lineages = await getAncestorLineage(plugin, rem);
+  const referencedRems = await rem.remsBeingReferenced();
+  const referencedIds = new Set<string>(referencedRems.map(r => r._id));
+
+  for (const lineage of lineages) {
+    // For properties, include the initial Rem; for descriptors, skip it
+    for (let i = 0; i < lineage.length; i++) {
+      const currentRem = lineage[i];
+      const remChildren = await getCleanChildrenAll(plugin, currentRem);
+      for (const child of remChildren) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          rem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          i === 0 // isInitialRem
+        );
+      }
+    }
+  }
+
+  return {
+    descriptors: Array.from(descriptorMap.values()),
+    properties,
+  };
+}
+
+async function traverseAndCollect_(
+  plugin: RNPlugin,
+  currentRem: Rem,
+  originalRem: Rem,
+  descriptorMap: Map<string, Rem>,
+  properties: Rem[],
+  visitedProperties: Set<string>,
+  visitedDescriptors: Set<string>,
+  lineage: Rem[],
+  referencedIds: Set<string>,
+  isInitialRem: boolean
+) {
+  // Collect descriptor (skip if it's the initial Rem)
+  if (!isInitialRem && (await currentRem.getType()) === RemType.DESCRIPTOR && !visitedDescriptors.has(currentRem._id)) {
+    visitedDescriptors.add(currentRem._id);
+    const root = await getDescriptorRoot(plugin, currentRem);
+    if (!descriptorMap.has(root._id) && (await hasLayer(plugin, originalRem, currentRem))) {
+      descriptorMap.set(root._id, currentRem);
+    }
+    // Recurse on all clean children if it's a descriptor
+    const children = await getCleanChildrenAll(plugin, currentRem);
+    for (const child of children) {
+      await traverseAndCollect(
+        plugin,
+        child,
+        originalRem,
+        descriptorMap,
+        properties,
+        visitedProperties,
+        visitedDescriptors,
+        lineage,
+        referencedIds,
+        false
+      );
+    }
+  }
+
+  // Collect concept (property)
+  if (
+    (await isConcept(plugin, currentRem)) && // !(await currentRem.isSlot) &&
+    !referencedIds.has(currentRem._id) &&
+    !visitedProperties.has(currentRem._id)
+  ) {
+    visitedProperties.add(currentRem._id);
+    const referencingAncestor = await findReferencingAncestor(plugin, originalRem, currentRem);
+    if (referencingAncestor && !referencedIds.has(referencingAncestor._id)) {
+      if (!visitedProperties.has(referencingAncestor._id)) {
+        properties.push(referencingAncestor);
+        visitedProperties.add(referencingAncestor._id);
+      }
+    } else {
+      properties.push(currentRem);
+    }
+  }
+
+  // Recurse for concepts and descriptors based on original logic
+  const children = await getCleanChildrenAll(plugin, currentRem);
+  for (const child of children) {
+    // This doesnt solve the problem
+    if(await child.isSlot())
+      continue;
+    
+    if (!visitedProperties.has(child._id) && (await isConcept(plugin, child))) {
+      if (await isSameBaseType(plugin, currentRem, child)) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          originalRem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          false
+        );
+      }
+    } else if (!visitedDescriptors.has(child._id) && (await isDescriptor(plugin, child))) {
+      if (await isSameBaseType(plugin, currentRem, child)) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          originalRem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          false
+        );
+      }
+    }
+  }
+}
+
+async function traverseAndCollect(
+  plugin: RNPlugin,
+  currentRem: Rem,
+  originalRem: Rem,
+  descriptorMap: Map<string, Rem>,
+  properties: Rem[],
+  visitedProperties: Set<string>,
+  visitedDescriptors: Set<string>,
+  lineage: Rem[],
+  referencedIds: Set<string>,
+  isInitialRem: boolean
+) {
+  // Check if the current rem is a slot
+  if (await currentRem.isSlot() && !isInitialRem && !visitedProperties.has(currentRem._id)) {
+    // Collect the slot as a property
+    visitedProperties.add(currentRem._id);
+    const referencingAncestor = await findReferencingAncestor(plugin, originalRem, currentRem);
+    if (referencingAncestor && !referencedIds.has(referencingAncestor._id)) {
+      if (!visitedProperties.has(referencingAncestor._id)) {
+        properties.push(referencingAncestor);
+        visitedProperties.add(referencingAncestor._id);
+      }
+    } else {
+      properties.push(currentRem);
+    }
+    return; // Stop recursion for slots
+  }
+
+  // Collect descriptor (skip if it's the initial Rem)
+  if (!isInitialRem && (await currentRem.getType()) === RemType.DESCRIPTOR && !visitedDescriptors.has(currentRem._id)) {
+    visitedDescriptors.add(currentRem._id);
+    const root = await getDescriptorRoot(plugin, currentRem);
+    if (!descriptorMap.has(root._id) && (await hasLayer(plugin, originalRem, currentRem))) {
+      descriptorMap.set(root._id, currentRem);
+    }
+    // Recurse on all clean children if it's a descriptor
+    const children = await getCleanChildrenAll(plugin, currentRem);
+    for (const child of children) {
+      //
+      if (await isSameBaseType(plugin, currentRem, child)) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          originalRem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          false
+        );
+      } 
+    }
+  }
+
+  // Collect concept (property)
+  if (
+    (await isConcept(plugin, currentRem)) &&
+    !referencedIds.has(currentRem._id) &&
+    !visitedProperties.has(currentRem._id)
+  ) {
+    visitedProperties.add(currentRem._id);
+    const referencingAncestor = await findReferencingAncestor(plugin, originalRem, currentRem);
+    if (referencingAncestor && !referencedIds.has(referencingAncestor._id)) {
+      if (!visitedProperties.has(referencingAncestor._id)) {
+        properties.push(referencingAncestor);
+        visitedProperties.add(referencingAncestor._id);
+      }
+    } else {
+      properties.push(currentRem);
+    }
+  }
+
+  // Recurse for concepts and descriptors based on original logic
+  const children = await getCleanChildrenAll(plugin, currentRem);
+  for (const child of children) {
+    if (!visitedProperties.has(child._id) && (await isConcept(plugin, child))) {
+      if (await isSameBaseType(plugin, currentRem, child)) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          originalRem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          false
+        );
+      }
+    } else if (!visitedDescriptors.has(child._id) && (await isDescriptor(plugin, child))) {
+      if (await isSameBaseType(plugin, currentRem, child)) {
+        await traverseAndCollect(
+          plugin,
+          child,
+          originalRem,
+          descriptorMap,
+          properties,
+          visitedProperties,
+          visitedDescriptors,
+          lineage,
+          referencedIds,
+          false
+        );
+      }
+    }
+  }
+}
+// ####################################
 // Helper function to find if any ancestor in the lineage references the property
 async function findReferencingAncestor(plugin: RNPlugin, rem: Rem, property: Rem): Promise<Rem | undefined> {
   let currentAncestor = await rem.getParentRem();
   
   while (currentAncestor) {
-    const children = await getCleanChildren(plugin, currentAncestor);
+    const children = await getCleanChildrenAll(plugin, currentAncestor);
     
     for (const child of children) {
       const references = await child.remsBeingReferenced();
@@ -1148,6 +1431,32 @@ async function findReferencingAncestor(plugin: RNPlugin, rem: Rem, property: Rem
   }
   
   return undefined;
+}
+
+async function hasLayer(plugin: RNPlugin, rem: Rem, layer: Rem): Promise<boolean> {
+  // Get all lineages from the given rem to its ancestors
+  const lineages = await getAncestorLineage(plugin, rem);
+  
+  // Collect unique ancestors, excluding the rem itself
+  const ancestorsSet = new Set<Rem>();
+  for (const lineage of lineages) {
+    for (let i = 1; i < lineage.length; i++) {
+      ancestorsSet.add(lineage[i]);
+    }
+  }
+  const ancestors = Array.from(ancestorsSet);
+  
+  // Fetch children of all ancestors concurrently
+  const childrenPromises = ancestors.map(ancestor => getCleanChildrenAll(plugin, ancestor));
+  const childrenArrays = await Promise.all(childrenPromises);
+  const allChildren = childrenArrays.flat();
+  
+  // Check if any child has the same base type as layer, concurrently
+  const checks = allChildren.map(child => isSameBaseType(plugin, child, layer));
+  const results = await Promise.all(checks);
+  
+  // Return true if any child matches, false otherwise
+  return results.some(result => result);
 }
 
 export async function getDescriptorRoot(plugin: RNPlugin, descriptor: Rem): Promise<Rem> {
@@ -1173,7 +1482,7 @@ export async function getClassDescriptors(plugin: RNPlugin, rem: Rem): Promise<R
   // Process each lineage
   for (const lineage of lineages) {
     for (const currentRem of lineage.slice(1)) {
-      const remChildren = await getCleanChildren(plugin, currentRem);
+      const remChildren = await getCleanChildrenAll(plugin, currentRem);
       for (const c of remChildren) {
         await collectDescriptors(plugin, c, descriptorMap, originalRem);
       }
@@ -1182,32 +1491,6 @@ export async function getClassDescriptors(plugin: RNPlugin, rem: Rem): Promise<R
 
   // Return the unique descriptors, with descendant descriptors overriding ancestor ones
   return Array.from(descriptorMap.values());
-}
-
-async function hasLayer(plugin: RNPlugin, rem: Rem, layer: Rem): Promise<boolean> {
-  // Get all lineages from the given rem to its ancestors
-  const lineages = await getAncestorLineage(plugin, rem);
-  
-  // Collect unique ancestors, excluding the rem itself
-  const ancestorsSet = new Set<Rem>();
-  for (const lineage of lineages) {
-    for (let i = 1; i < lineage.length; i++) {
-      ancestorsSet.add(lineage[i]);
-    }
-  }
-  const ancestors = Array.from(ancestorsSet);
-  
-  // Fetch children of all ancestors concurrently
-  const childrenPromises = ancestors.map(ancestor => getCleanChildren(plugin, ancestor));
-  const childrenArrays = await Promise.all(childrenPromises);
-  const allChildren = childrenArrays.flat();
-  
-  // Check if any child has the same base type as layer, concurrently
-  const checks = allChildren.map(child => isSameBaseType(plugin, child, layer));
-  const results = await Promise.all(checks);
-  
-  // Return true if any child matches, false otherwise
-  return results.some(result => result);
 }
 
 async function collectDescriptors(plugin: RNPlugin, rem: Rem, descriptorMap: Map<string, Rem>, originalRem: Rem) {
@@ -1227,7 +1510,7 @@ async function collectDescriptors(plugin: RNPlugin, rem: Rem, descriptorMap: Map
       //  console.log(await getRemText(plugin, originalRem) + " has no layer " + await getRemText(plugin, await getBaseType(plugin, rem)));
 
       // Recursively process children
-      const children = await getCleanChildren(plugin, rem);
+      const children = await getCleanChildrenAll(plugin, rem);
       for (const child of children) {
         //if(await isSameBaseType(plugin, originalRem, child) || await isSameBaseType(plugin, rem, child))
         await collectDescriptors(plugin, child, descriptorMap, originalRem);
@@ -1429,4 +1712,38 @@ export function lowestYPosition(
   } else {
     return Math.min(...yValues);
   }
+}
+
+// ##############################################
+export async function getLayers(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const initialBaseType = await getBaseType(plugin, rem);
+  const lineages = await getAncestorLineage(plugin, rem);
+  
+  const ancestorsSet = new Set<Rem>();
+  for (const lineage of lineages) {
+    for (let i = 1; i < lineage.length; i++) {
+      ancestorsSet.add(lineage[i]);
+    }
+  }
+  const ancestors = Array.from(ancestorsSet);
+  
+  const childrenPromises = ancestors.map(ancestor => getCleanChildren(plugin, ancestor));
+  const childrenArrays = await Promise.all(childrenPromises);
+  const allChildren = childrenArrays.flat();
+  
+  const baseTypePromises = allChildren.map(child => getBaseType(plugin, child));
+  const baseTypes = await Promise.all(baseTypePromises);
+  
+  const seenBaseTypes = new Set<string>();
+  const result: Rem[] = [];
+  for (let i = 0; i < allChildren.length; i++) {
+    const child = allChildren[i];
+    const childBaseType = baseTypes[i];
+    if (childBaseType._id !== initialBaseType._id && !seenBaseTypes.has(childBaseType._id)) {
+      result.push(child);
+      seenBaseTypes.add(childBaseType._id);
+    }
+  }
+  
+  return result;
 }
