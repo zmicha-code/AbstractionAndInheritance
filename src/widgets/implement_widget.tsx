@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
-import { getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData} from '../utils/utils';
+import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData} from '../utils/utils';
 import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // Define interface for descriptor items
@@ -886,7 +886,8 @@ export function ImplementWidget_() {
 }
 */
 
-export function ImplementWidget() {
+
+export function _ImplementWidget() {
   const plugin = usePlugin() as RNPlugin;
   const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
   const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
@@ -1051,9 +1052,21 @@ export function ImplementWidget() {
     return nested;
   };
 
+  async function printLayerItems(layerItems: layerItem[]) {
+    for(const i of layerItems) {
+      console.log(await getRemText(plugin, i.item))
+    }
+  };
+
   const initializeWidget = async () => {
     if (!displayedRem) return;
     setLoading(true);
+
+    // ###
+    const layers = await getLayers(plugin, displayedRem);
+    await printLayerItems(layers);
+
+    // ###
     const [txt, curBase] = await Promise.all([
       getRemText(plugin, displayedRem),
       getBaseType(plugin, displayedRem)
@@ -1072,6 +1085,7 @@ export function ImplementWidget() {
     );
     setCollapsedParents(initialCollapsedParents);
     setCollapsedBases(new Set(sortedGroupedItems.map(e => e.group.base._id)));
+    
     setLoading(false);
   };
 
@@ -1171,5 +1185,828 @@ export function ImplementWidget() {
     </div>
   );
 }
+
+/*
+interface UILayerItem extends layerItem {
+  text: string;
+}
+
+interface UIParentGroup {
+  parent: Rem | undefined;
+  parentText: string;
+  items: UILayerItem[];
+}
+
+interface UIBaseTypeGroup {
+  baseType: Rem;
+  baseTypeText: string;
+  parentGroups: UIParentGroup[];
+}
+
+export function ImplementWidget_() {
+  const plugin = usePlugin() as RNPlugin;
+  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
+  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
+  const [baseTypeGroups, setBaseTypeGroups] = useState<UIBaseTypeGroup[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [collapsedBases, setCollapsedBases] = useState<string[]>([]);
+  const [collapsedParents, setCollapsedParents] = useState<{ [baseTypeId: string]: string[] }>({});
+  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
+  const [displayedRemBaseId, setDisplayedRemBaseId] = useState<string | undefined>(undefined);
+
+  const focusedRem = useTracker(async (reactPlugin) => {
+    return await reactPlugin.focus.getFocusedRem();
+  });
+
+  const toggleBaseCollapse = (baseTypeId: string) => {
+    setCollapsedBases(prev => {
+      if (prev.includes(baseTypeId)) {
+        return prev.filter(id => id !== baseTypeId);
+      } else {
+        return [...prev, baseTypeId];
+      }
+    });
+  };
+
+  const toggleParentCollapse = (baseTypeId: string, parentKey: string) => {
+    setCollapsedParents(prev => {
+      const baseCollapsed = prev[baseTypeId] || [];
+      if (baseCollapsed.includes(parentKey)) {
+        return { ...prev, [baseTypeId]: baseCollapsed.filter(key => key !== parentKey) };
+      } else {
+        return { ...prev, [baseTypeId]: [...baseCollapsed, parentKey] };
+      }
+    });
+  };
+
+  const groupLayerItems = async (layerItems: layerItem[], displayedRemBaseId: string | undefined): Promise<UIBaseTypeGroup[]> => {
+    const allItems = layerItems.map(li => li.item);
+    const allBaseTypes = layerItems.map(li => li.layerBaseType);
+    const allParents = layerItems.map(li => li.layerParent).filter(p => p !== undefined) as Rem[];
+
+    const uniqueItems = Array.from(new Set(allItems));
+    const uniqueBaseTypes = Array.from(new Set(allBaseTypes));
+    const uniqueParents = Array.from(new Set(allParents));
+
+    const [itemTexts, baseTypeTexts, parentTexts] = await Promise.all([
+      Promise.all(uniqueItems.map(rem => getRemText(plugin, rem))),
+      Promise.all(uniqueBaseTypes.map(rem => getRemText(plugin, rem))),
+      Promise.all(uniqueParents.map(rem => getRemText(plugin, rem)))
+    ]);
+
+    const itemTextMap = new Map(uniqueItems.map((rem, index) => [rem._id, itemTexts[index]]));
+    const baseTypeTextMap = new Map(uniqueBaseTypes.map((rem, index) => [rem._id, baseTypeTexts[index]]));
+    const parentTextMap = new Map(uniqueParents.map((rem, index) => [rem._id, parentTexts[index]]));
+
+    const uiLayerItems = layerItems.map(li => ({
+      ...li,
+      text: itemTextMap.get(li.item._id) || "Unknown"
+    }));
+
+    const baseTypeMap = new Map<string, UILayerItem[]>();
+    for (const item of uiLayerItems) {
+      const baseTypeId = item.layerBaseType._id;
+      if (!baseTypeMap.has(baseTypeId)) {
+        baseTypeMap.set(baseTypeId, []);
+      }
+      baseTypeMap.get(baseTypeId)!.push(item);
+    }
+
+    const baseTypeGroups: UIBaseTypeGroup[] = [];
+    for (const [baseTypeId, items] of baseTypeMap) {
+      const baseType = items[0].layerBaseType;
+      const baseTypeText = baseTypeTextMap.get(baseTypeId) || "Unknown";
+
+      const parentMap = new Map<string, UILayerItem[]>();
+      for (const item of items) {
+        const parentKey = item.layerParent?._id || 'no-parent';
+        if (!parentMap.has(parentKey)) {
+          parentMap.set(parentKey, []);
+        }
+        parentMap.get(parentKey)!.push(item);
+      }
+
+      const parentGroups: UIParentGroup[] = [];
+      for (const [parentKey, groupItems] of parentMap) {
+        const parent = groupItems[0].layerParent;
+        const parentText = parent ? parentTextMap.get(parent._id) || "Unknown" : "No Parent";
+        parentGroups.push({ parent, parentText, items: groupItems });
+      }
+
+      parentGroups.sort((a, b) => a.parentText.localeCompare(b.parentText));
+      baseTypeGroups.push({ baseType, baseTypeText, parentGroups });
+    }
+
+    // Sort baseTypeGroups: prioritize the group matching displayedRemBaseId, then alphabetically
+    baseTypeGroups.sort((a, b) => {
+      if (a.baseType._id === displayedRemBaseId) return -1;
+      if (b.baseType._id === displayedRemBaseId) return 1;
+      return a.baseTypeText.localeCompare(b.baseTypeText);
+    });
+
+    return baseTypeGroups;
+  };
+
+  function filterLayerItems(layerItems: layerItem[]): layerItem[] {
+  const seenIds = new Set<string>();
+  return layerItems.filter(layerItem => {
+    const id = layerItem.item._id;
+    if (seenIds.has(id)) {
+      return false;
+    } else {
+      seenIds.add(id);
+      return true;
+    }
+  });
+  }
+
+  const initializeWidget = async () => {
+    if (!displayedRem) return;
+    setLoading(true);
+
+    const [txt, curBase, layerItems] = await Promise.all([
+      getRemText(plugin, displayedRem),
+      getBaseType(plugin, displayedRem),
+      getLayers(plugin, displayedRem)
+    ]);
+
+    setCurrentRem(txt);
+    const baseText = await getRemText(plugin, curBase);
+    setCurrentRemBase(baseText);
+    setDisplayedRemBaseId(curBase._id);
+
+    const grouped = await groupLayerItems(filterLayerItems(layerItems), curBase._id);
+    setBaseTypeGroups(grouped);
+
+    const initialCollapsedBases = grouped.map(group => group.baseType._id);
+    setCollapsedBases(initialCollapsedBases);
+
+    const initialCollapsedParents = Object.fromEntries(
+      grouped.map(group => [
+        group.baseType._id,
+        group.parentGroups.map(pg => pg.parent?._id || 'no-parent')
+      ])
+    );
+    setCollapsedParents(initialCollapsedParents);
+
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    initializeWidget();
+  }, [displayedRem, plugin]);
+
+  const handleClick = async (rem: Rem, type: string) => {
+    if (!displayedRem) return;
+    if (type === "Descriptor") await createRemWithReference(plugin, displayedRem, rem);
+    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
+      <div style={{ marginBottom: 8 }}>
+        <MyRemNoteButton 
+          text="Load Current Rem" 
+          onClick={() => setDisplayedRem(focusedRem)} 
+          img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" 
+        />
+      </div>
+      {displayedRem ? (
+        loading ? (
+          <div>Loading...</div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
+              {currentRem}
+            </div>
+            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
+              {baseTypeGroups.map(group => {
+                const baseTypeId = group.baseType._id;
+                const isBaseCollapsed = collapsedBases.includes(baseTypeId);
+                const borderStyle = group.baseType._id === displayedRemBaseId ? "1px dashed #ccc" : "1px solid #ddd";
+                return (
+                  <div 
+                    key={baseTypeId} 
+                    style={{ marginBottom: 16, border: borderStyle, padding: 8, borderRadius: 4 }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                      <button 
+                        onClick={() => toggleBaseCollapse(baseTypeId)} 
+                        style={{ marginRight: 8 }}
+                      >
+                        {isBaseCollapsed ? "+" : "-"}
+                      </button>
+                      <span style={{ fontWeight: "bold" }}>{group.baseTypeText}</span>
+                    </div>
+                    {!isBaseCollapsed && group.parentGroups.map(pg => {
+                      const parentKey = pg.parent?._id || 'no-parent';
+                      const isParentCollapsed = collapsedParents[baseTypeId]?.includes(parentKey) || false;
+                      return (
+                        <div 
+                          key={parentKey} 
+                          style={{ marginLeft: 12, marginBottom: 12 }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center" }}>
+                            <button
+                              onClick={() => toggleParentCollapse(baseTypeId, parentKey)}
+                              style={{ marginRight: 8 }}
+                            >
+                              {isParentCollapsed ? "+" : "-"}
+                            </button>
+                            <div style={{ fontStyle: "italic" }}>{pg.parentText}</div>
+                          </div>
+                          {!isParentCollapsed && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+                              {pg.items.map(it => (
+                                <MyRemNoteButton
+                                  key={it.item._id}
+                                  text={it.text}
+                                  img={
+                                    it.itemType === "Slot"
+                                      ? "M18 9V4a1 1 0 0 0-1-1H8.914a1 1 0 0 0-.707.293L4.293 7.207A1 1 0 0 0 4 7.914V20a1 1 0 0 0 1 1h4M9 3v4a1 1 0 0 1-1 1H4m11 6v4m-2-2h4m3 0a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z"
+                                      : it.itemType === "Concept"
+                                      ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
+                                      : "M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+                                  }
+                                  onClick={() => handleClick(it.item, it.itemType)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )
+      ) : (
+        <div>No Rem loaded. Click the button to load the current Rem.</div>
+      )}
+    </div>
+  );
+}
+
+export function ImplementWidget__() {
+  const plugin = usePlugin() as RNPlugin;
+  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
+  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
+  const [baseTypeGroups, setBaseTypeGroups] = useState<UIBaseTypeGroup[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [collapsedBases, setCollapsedBases] = useState<string[]>([]);
+  const [collapsedParents, setCollapsedParents] = useState<{ [baseTypeId: string]: string[] }>({});
+  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
+  const [displayedRemBaseId, setDisplayedRemBaseId] = useState<string | undefined>(undefined);
+
+  const focusedRem = useTracker(async (reactPlugin) => {
+    return await reactPlugin.focus.getFocusedRem();
+  });
+
+  const toggleBaseCollapse = (baseTypeId: string) => {
+    setCollapsedBases(prev => {
+      if (prev.includes(baseTypeId)) {
+        return prev.filter(id => id !== baseTypeId);
+      } else {
+        return [...prev, baseTypeId];
+      }
+    });
+  };
+
+  const toggleParentCollapse = (baseTypeId: string, parentKey: string) => {
+    setCollapsedParents(prev => {
+      const baseCollapsed = prev[baseTypeId] || [];
+      if (baseCollapsed.includes(parentKey)) {
+        return { ...prev, [baseTypeId]: baseCollapsed.filter(key => key !== parentKey) };
+      } else {
+        return { ...prev, [baseTypeId]: [...baseCollapsed, parentKey] };
+      }
+    });
+  };
+
+  const expandAll = () => {
+    setCollapsedBases([]);
+    setCollapsedParents(Object.fromEntries(
+      baseTypeGroups.map(group => [group.baseType._id, []])
+    ));
+  };
+
+  const groupLayerItems = async (layerItems: layerItem[], displayedRemBaseId: string | undefined): Promise<UIBaseTypeGroup[]> => {
+    const allItems = layerItems.map(li => li.item);
+    const allBaseTypes = layerItems.map(li => li.layerBaseType);
+    const allParents = layerItems.map(li => li.layerParent).filter(p => p !== undefined) as Rem[];
+
+    const uniqueItems = Array.from(new Set(allItems));
+    const uniqueBaseTypes = Array.from(new Set(allBaseTypes));
+    const uniqueParents = Array.from(new Set(allParents));
+
+    const [itemTexts, baseTypeTexts, parentTexts] = await Promise.all([
+      Promise.all(uniqueItems.map(rem => getRemText(plugin, rem))),
+      Promise.all(uniqueBaseTypes.map(rem => getRemText(plugin, rem))),
+      Promise.all(uniqueParents.map(rem => getRemText(plugin, rem)))
+    ]);
+
+    const itemTextMap = new Map(uniqueItems.map((rem, index) => [rem._id, itemTexts[index]]));
+    const baseTypeTextMap = new Map(uniqueBaseTypes.map((rem, index) => [rem._id, baseTypeTexts[index]]));
+    const parentTextMap = new Map(uniqueParents.map((rem, index) => [rem._id, parentTexts[index]]));
+
+    const uiLayerItems = layerItems.map(li => ({
+      ...li,
+      text: itemTextMap.get(li.item._id) || "Unknown"
+    }));
+
+    const baseTypeMap = new Map<string, UILayerItem[]>();
+    for (const item of uiLayerItems) {
+      const baseTypeId = item.layerBaseType._id;
+      if (!baseTypeMap.has(baseTypeId)) {
+        baseTypeMap.set(baseTypeId, []);
+      }
+      baseTypeMap.get(baseTypeId)!.push(item);
+    }
+
+    const baseTypeGroups: UIBaseTypeGroup[] = [];
+    for (const [baseTypeId, items] of baseTypeMap) {
+      const baseType = items[0].layerBaseType;
+      const baseTypeText = baseTypeTextMap.get(baseTypeId) || "Unknown";
+
+      const parentMap = new Map<string, UILayerItem[]>();
+      for (const item of items) {
+        const parentKey = item.layerParent?._id || 'no-parent';
+        if (!parentMap.has(parentKey)) {
+          parentMap.set(parentKey, []);
+        }
+        parentMap.get(parentKey)!.push(item);
+      }
+
+      const parentGroups: UIParentGroup[] = [];
+      for (const [parentKey, groupItems] of parentMap) {
+        const parent = groupItems[0].layerParent;
+        const parentText = parent ? parentTextMap.get(parent._id) || "Unknown" : "No Parent";
+        parentGroups.push({ parent, parentText, items: groupItems });
+      }
+
+      parentGroups.sort((a, b) => a.parentText.localeCompare(b.parentText));
+      baseTypeGroups.push({ baseType, baseTypeText, parentGroups });
+    }
+
+    baseTypeGroups.sort((a, b) => {
+      if (a.baseType._id === displayedRemBaseId) return -1;
+      if (b.baseType._id === displayedRemBaseId) return 1;
+      return a.baseTypeText.localeCompare(b.baseTypeText);
+    });
+
+    return baseTypeGroups;
+  };
+
+  function filterLayerItems(layerItems: layerItem[]): layerItem[] {
+    const seenIds = new Set<string>();
+    return layerItems.filter(layerItem => {
+      const id = layerItem.item._id;
+      if (seenIds.has(id)) {
+        return false;
+      } else {
+        seenIds.add(id);
+        return true;
+      }
+    });
+  }
+
+  const initializeWidget = async () => {
+    if (!displayedRem) return;
+    setLoading(true);
+
+    const [txt, curBase, layerItems] = await Promise.all([
+      getRemText(plugin, displayedRem),
+      getBaseType(plugin, displayedRem),
+      getLayers(plugin, displayedRem)
+    ]);
+
+    setCurrentRem(txt);
+    const baseText = await getRemText(plugin, curBase);
+    setCurrentRemBase(baseText);
+    setDisplayedRemBaseId(curBase._id);
+
+    const grouped = await groupLayerItems(filterLayerItems(layerItems), curBase._id);
+    setBaseTypeGroups(grouped);
+
+    const initialCollapsedBases = grouped.map(group => group.baseType._id);
+    setCollapsedBases(initialCollapsedBases);
+
+    const initialCollapsedParents = Object.fromEntries(
+      grouped.map(group => [
+        group.baseType._id,
+        group.parentGroups.map(pg => pg.parent?._id || 'no-parent')
+      ])
+    );
+    setCollapsedParents(initialCollapsedParents);
+
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    initializeWidget();
+  }, [displayedRem, plugin]);
+
+  const handleClick = async (rem: Rem, type: string) => {
+    if (!displayedRem) return;
+    if (type === "Descriptor") await createRemWithReference(plugin, displayedRem, rem);
+    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
+      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+        <MyRemNoteButton 
+          text="Load Current Rem" 
+          onClick={() => setDisplayedRem(focusedRem)} 
+          img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" 
+        />
+        <MyRemNoteButton 
+          text="Expand All" 
+          onClick={expandAll} 
+          img="expand-icon" // Placeholder; replace with actual icon if available
+        />
+      </div>
+      {displayedRem ? (
+        loading ? (
+          <div>Loading...</div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
+              {currentRem}
+            </div>
+            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
+              {baseTypeGroups.map(group => {
+                const baseTypeId = group.baseType._id;
+                const isBaseCollapsed = collapsedBases.includes(baseTypeId);
+                const borderStyle = group.baseType._id === displayedRemBaseId ? "1px dashed #ccc" : "1px solid #ddd";
+                return (
+                  <div 
+                    key={baseTypeId} 
+                    style={{ marginBottom: 16, border: borderStyle, padding: 8, borderRadius: 4 }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                      <button 
+                        onClick={() => toggleBaseCollapse(baseTypeId)} 
+                        style={{ marginRight: 8 }}
+                      >
+                        {isBaseCollapsed ? "+" : "-"}
+                      </button>
+                      <span style={{ fontWeight: "bold" }}>{group.baseTypeText}</span>
+                    </div>
+                    {!isBaseCollapsed && group.parentGroups.map(pg => {
+                      const parentKey = pg.parent?._id || 'no-parent';
+                      const isParentCollapsed = collapsedParents[baseTypeId]?.includes(parentKey) || false;
+                      return (
+                        <div 
+                          key={parentKey} 
+                          style={{ marginLeft: 12, marginBottom: 12 }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center" }}>
+                            <button
+                              onClick={() => toggleParentCollapse(baseTypeId, parentKey)}
+                              style={{ marginRight: 8 }}
+                            >
+                              {isParentCollapsed ? "+" : "-"}
+                            </button>
+                            <div style={{ fontStyle: "italic" }}>{pg.parentText}</div>
+                          </div>
+                          {!isParentCollapsed && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+                              {pg.items.map(it => (
+                                <MyRemNoteButton
+                                  key={it.item._id}
+                                  text={it.text}
+                                  img={
+                                    it.itemType === "Slot"
+                                      ? "M18 9V4a1 1 0 0 0-1-1H8.914a1 1 0 0 0-.707.293L4.293 7.207A1 1 0 0 0 4 7.914V20a1 1 0 0 0 1 1h4M9 3v4a1 1 0 0 1-1 1H4m11 6v4m-2-2h4m3 0a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z"
+                                      : it.itemType === "Concept"
+                                      ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
+                                      : "M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+                                  }
+                                  onClick={() => handleClick(it.item, it.itemType)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )
+      ) : (
+        <div>No Rem loaded. Click the button to load the current Rem.</div>
+      )}
+    </div>
+  );
+}
+  */
+
+// ###################################################
+
+interface UILayerItem extends layerItem {
+  text: string;
+}
+
+interface UITreeLayerItem extends UILayerItem {
+  children: UITreeLayerItem[];
+}
+
+interface UIBaseTypeGroup {
+  baseType: Rem;
+  baseTypeText: string;
+  roots: UITreeLayerItem[];
+}
+
+export function ImplementWidget() {
+  const plugin = usePlugin() as RNPlugin;
+  const [currentRem, setCurrentRem] = useState<string>("No Rem Focused");
+  const [currentRemBase, setCurrentRemBase] = useState<string>("No Rem Focused");
+  const [baseTypeGroups, setBaseTypeGroups] = useState<UIBaseTypeGroup[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [collapsedBases, setCollapsedBases] = useState<string[]>([]);
+  const [collapsedItems, setCollapsedItems] = useState<{ [itemId: string]: boolean }>({});
+  const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
+  const [displayedRemBaseId, setDisplayedRemBaseId] = useState<string | undefined>(undefined);
+
+  const focusedRem = useTracker(async (reactPlugin) => {
+    return await reactPlugin.focus.getFocusedRem();
+  });
+
+  const toggleBaseCollapse = (baseTypeId: string) => {
+    setCollapsedBases(prev => {
+      if (prev.includes(baseTypeId)) {
+        return prev.filter(id => id !== baseTypeId);
+      } else {
+        return [...prev, baseTypeId];
+      }
+    });
+  };
+
+  const toggleItemCollapse = (itemId: string) => {
+    setCollapsedItems(prev => {
+      const current = prev[itemId] ?? true;
+      return { ...prev, [itemId]: !current };
+    });
+  };
+
+  const expandAll = () => {
+    setCollapsedBases([]);
+    setCollapsedItems(prev => {
+      const newCollapsed = { ...prev };
+      Object.keys(newCollapsed).forEach(key => newCollapsed[key] = false);
+      return newCollapsed;
+    });
+  };
+
+  const collectItemsWithChildren = (roots: UITreeLayerItem[]): string[] => {
+    const ids: string[] = [];
+    const traverse = (item: UITreeLayerItem) => {
+      if (item.children.length > 0) {
+        ids.push(item.item._id);
+        item.children.forEach(traverse);
+      }
+    };
+    roots.forEach(traverse);
+    return ids;
+  };
+
+  const groupLayerItems = async (layerItems: layerItem[], displayedRemBaseId: string | undefined): Promise<UIBaseTypeGroup[]> => {
+    const allItems = layerItems.map(li => li.item);
+    const allBaseTypes = layerItems.map(li => li.layerBaseType);
+    const allParents = layerItems.map(li => li.layerParent).filter(p => p !== undefined) as Rem[];
+
+    const uniqueItems = Array.from(new Set(allItems));
+    const uniqueBaseTypes = Array.from(new Set(allBaseTypes));
+    //const uniqueParents = Array.from(new Set(allParents));
+
+    //const [itemTexts, baseTypeTexts, parentTexts] = await Promise.all([
+    const [itemTexts, baseTypeTexts] = await Promise.all([
+      Promise.all(uniqueItems.map(rem => getRemText(plugin, rem))),
+      Promise.all(uniqueBaseTypes.map(rem => getRemText(plugin, rem))),
+     // Promise.all(uniqueParents.map(rem => getRemText(plugin, rem)))
+    ]);
+
+    const itemTextMap = new Map(uniqueItems.map((rem, index) => [rem._id, itemTexts[index]]));
+    const baseTypeTextMap = new Map(uniqueBaseTypes.map((rem, index) => [rem._id, baseTypeTexts[index]]));
+    //const parentTextMap = new Map(uniqueParents.map((rem, index) => [rem._id, parentTexts[index]]));
+
+    const uiLayerItems = layerItems.map(li => ({
+      ...li,
+      text: itemTextMap.get(li.item._id) || "Unknown"
+    }));
+
+    const baseTypeMap = new Map<string, UILayerItem[]>();
+    for (const item of uiLayerItems) {
+      const baseTypeId = item.layerBaseType._id;
+      if (!baseTypeMap.has(baseTypeId)) {
+        baseTypeMap.set(baseTypeId, []);
+      }
+      baseTypeMap.get(baseTypeId)!.push(item);
+    }
+
+    const baseTypeGroups: UIBaseTypeGroup[] = [];
+    for (const [baseTypeId, items] of baseTypeMap) {
+      const baseType = items[0].layerBaseType;
+      const baseTypeText = baseTypeTextMap.get(baseTypeId) || "Unknown";
+
+      // Build tree structure
+      const itemMap = new Map<string, UITreeLayerItem>();
+      items.forEach(item => {
+        itemMap.set(item.item._id, { ...item, children: [] });
+      });
+
+      const childrenMap = new Map<string, UITreeLayerItem[]>();
+      items.forEach(item => {
+        if (item.layerParent && itemMap.has(item.layerParent._id)) {
+          const parentId = item.layerParent._id;
+          if (!childrenMap.has(parentId)) {
+            childrenMap.set(parentId, []);
+          }
+          childrenMap.get(parentId)!.push(itemMap.get(item.item._id)!);
+        }
+      });
+
+      itemMap.forEach(item => {
+        item.children = childrenMap.get(item.item._id) || [];
+      });
+
+      const roots = Array.from(itemMap.values()).filter(item => !item.layerParent || !itemMap.has(item.layerParent._id));
+
+      baseTypeGroups.push({ baseType, baseTypeText, roots });
+    }
+
+    baseTypeGroups.sort((a, b) => {
+      if (a.baseType._id === displayedRemBaseId) return -1;
+      if (b.baseType._id === displayedRemBaseId) return 1;
+      return a.baseTypeText.localeCompare(b.baseTypeText);
+    });
+
+    return baseTypeGroups;
+  };
+
+  // Remove dublicates
+  function filterLayerItems(layerItems: layerItem[]): layerItem[] {
+    const seenIds = new Set<string>();
+    return layerItems.filter(layerItem => {
+      const id = layerItem.item._id;
+      if (seenIds.has(id)) {
+        return false;
+      } else {
+        seenIds.add(id);
+        return true;
+      }
+    });
+  }
+
+  const initializeWidget = async () => {
+    if (!displayedRem) return;
+    setLoading(true);
+
+    const [txt, curBase, layerItems] = await Promise.all([
+      getRemText(plugin, displayedRem),
+      getBaseType(plugin, displayedRem),
+      getLayers(plugin, displayedRem)
+    ]);
+
+    setCurrentRem(txt);
+    const baseText = await getRemText(plugin, curBase);
+    setCurrentRemBase(baseText);
+    setDisplayedRemBaseId(curBase._id);
+
+    const grouped = await groupLayerItems(filterLayerItems(layerItems), curBase._id);
+    setBaseTypeGroups(grouped);
+
+    const initialCollapsedBases = grouped.map(group => group.baseType._id);
+    setCollapsedBases(initialCollapsedBases);
+
+    const allItemsWithChildren = grouped.flatMap(group => collectItemsWithChildren(group.roots));
+    const initialCollapsedItems = Object.fromEntries(allItemsWithChildren.map(id => [id, true]));
+    setCollapsedItems(initialCollapsedItems);
+
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    initializeWidget();
+  }, [displayedRem, plugin]);
+
+  const handleClick = async (rem: Rem, type: string) => {
+    if (!displayedRem) return;
+    if (type === "Descriptor") await createRemWithReference(plugin, displayedRem, rem);
+    else await createPropertyReference(plugin, displayedRem, rem, await rem.isSlot());
+  };
+
+  const LayerItemNode = ({ item }: { item: UITreeLayerItem }) => {
+    const isCollapsed = collapsedItems[item.item._id] ?? true;
+    const hasChildren = item.children.length > 0;
+
+    return (
+      <div style={{ marginLeft: 6, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '10px 1fr', gap: '10px', alignItems: 'center' }}>
+          {/* Column 1: Space for the collapse button, empty if no children */}
+          <div>
+            {hasChildren && (
+              <button
+                onClick={() => toggleItemCollapse(item.item._id)}
+                style={{ width: '100%', textAlign: 'center' }}
+              >
+                {isCollapsed ? '+' : '-'}
+              </button>
+            )}
+          </div>
+          {/* Column 2: Main content */}
+          <div>
+            <MyRemNoteButton
+              text={item.text}
+              img={
+                item.itemType === "Slot"
+                  ? "M18 9V4a1 1 0 0 0-1-1H8.914a1 1 0 0 0-.707.293L4.293 7.207A1 1 0 0 0 4 7.914V20a1 1 0 0 0 1 1h4M9 3v4a1 1 0 0 1-1 1H4m11 6v4m-2-2h4m3 0a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z"
+                  : item.itemType === "Concept"
+                  ? "M15 4h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3m0 3h6m-3 5h3m-6 0h.01M12 16h3m-6 0h.01M10 3v4h4V3h-4Z"
+                  : "M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+              }
+              onClick={() => handleClick(item.item, item.itemType)}
+            />
+          </div>
+        </div>
+        {/* Render children with additional indentation */}
+        {!isCollapsed && hasChildren && (
+          <div style={{ marginLeft: 24, marginTop: 6 }}>
+            {item.children.map(child => (
+              <LayerItemNode key={child.item._id} item={child} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
+      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+        <MyRemNoteButton 
+          text="Load Current Rem" 
+          onClick={() => setDisplayedRem(focusedRem)} 
+          img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" 
+        />
+        <MyRemNoteButton 
+          text="Expand All" 
+          onClick={expandAll} 
+          img="expand-icon" // Replace with actual icon if available
+        />
+      </div>
+      {displayedRem ? (
+        loading ? (
+          <div>Loading...</div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 18, padding: 8 }}>
+              {currentRem}
+            </div>
+            <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 40px)", padding: "0 8px" }}>
+              {baseTypeGroups.map(group => {
+                const baseTypeId = group.baseType._id;
+                const isBaseCollapsed = collapsedBases.includes(baseTypeId);
+                const borderStyle = group.baseType._id === displayedRemBaseId ? "1px dashed #ccc" : "1px solid #ddd";
+                return (
+                  <div 
+                    key={baseTypeId} 
+                    style={{ marginBottom: 16, border: borderStyle, padding: 8, borderRadius: 4 }}
+                  >
+                    <div style={{ display: 'grid', gridTemplateColumns: '10px 1fr', gap: '10px', alignItems: 'center', marginBottom: 8 }}>
+                      <button
+                        onClick={() => toggleBaseCollapse(baseTypeId)}
+                        style={{ width: '100%', textAlign: 'center' }}
+                      >
+                        {isBaseCollapsed ? '+' : '-'}
+                      </button>
+                      <span style={{ fontWeight: 'bold' }}>{group.baseTypeText}</span>
+                    </div>
+                    {!isBaseCollapsed && (
+                      <div style={{ marginLeft: 6 }}>
+                        {group.roots.map(root => (
+                          <LayerItemNode key={root.item._id} item={root} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )
+      ) : (
+        <div>No Rem loaded. Click the button to load the current Rem.</div>
+      )}
+    </div>
+  );
+}
+
 
 renderWidget(ImplementWidget);
