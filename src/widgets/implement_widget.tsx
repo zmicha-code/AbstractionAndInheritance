@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
-import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData} from '../utils/utils';
+import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData, printLayerItem} from '../utils/utils';
 import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // Define interface for descriptor items
@@ -1734,6 +1734,8 @@ export function ImplementWidget() {
   const [displayedRem, setDisplayedRem] = useState<Rem | undefined>(undefined);
   const [displayedRemBaseId, setDisplayedRemBaseId] = useState<string | undefined>(undefined);
 
+  const [includeCurrentLayer, setIncludeCurrentLayer] = useState(false);
+
   const focusedRem = useTracker(async (reactPlugin) => {
     return await reactPlugin.focus.getFocusedRem();
   });
@@ -1756,12 +1758,27 @@ export function ImplementWidget() {
   };
 
   const expandAll = () => {
-    setCollapsedBases([]);
-    setCollapsedItems(prev => {
-      const newCollapsed = { ...prev };
-      Object.keys(newCollapsed).forEach(key => newCollapsed[key] = false);
-      return newCollapsed;
-    });
+    const allBaseIds = baseTypeGroups.map(group => group.baseType._id);
+    const allItemsExpanded = Object.values(collapsedItems).every(value => !value);
+    const allBasesExpanded = collapsedBases.length === 0;
+
+    if (allBasesExpanded && allItemsExpanded) {
+      // Collapse all
+      setCollapsedBases(allBaseIds);
+      setCollapsedItems(prev => {
+        const newCollapsed = { ...prev };
+        Object.keys(newCollapsed).forEach(key => newCollapsed[key] = true);
+        return newCollapsed;
+      });
+    } else {
+      // Expand all
+      setCollapsedBases([]);
+      setCollapsedItems(prev => {
+        const newCollapsed = { ...prev };
+        Object.keys(newCollapsed).forEach(key => newCollapsed[key] = false);
+        return newCollapsed;
+      });
+    }
   };
 
   const collectItemsWithChildren = (roots: UITreeLayerItem[]): string[] => {
@@ -1779,22 +1796,17 @@ export function ImplementWidget() {
   const groupLayerItems = async (layerItems: layerItem[], displayedRemBaseId: string | undefined): Promise<UIBaseTypeGroup[]> => {
     const allItems = layerItems.map(li => li.item);
     const allBaseTypes = layerItems.map(li => li.layerBaseType);
-    const allParents = layerItems.map(li => li.layerParent).filter(p => p !== undefined) as Rem[];
 
     const uniqueItems = Array.from(new Set(allItems));
     const uniqueBaseTypes = Array.from(new Set(allBaseTypes));
-    //const uniqueParents = Array.from(new Set(allParents));
 
-    //const [itemTexts, baseTypeTexts, parentTexts] = await Promise.all([
     const [itemTexts, baseTypeTexts] = await Promise.all([
       Promise.all(uniqueItems.map(rem => getRemText(plugin, rem))),
       Promise.all(uniqueBaseTypes.map(rem => getRemText(plugin, rem))),
-     // Promise.all(uniqueParents.map(rem => getRemText(plugin, rem)))
     ]);
 
     const itemTextMap = new Map(uniqueItems.map((rem, index) => [rem._id, itemTexts[index]]));
     const baseTypeTextMap = new Map(uniqueBaseTypes.map((rem, index) => [rem._id, baseTypeTexts[index]]));
-    //const parentTextMap = new Map(uniqueParents.map((rem, index) => [rem._id, parentTexts[index]]));
 
     const uiLayerItems = layerItems.map(li => ({
       ...li,
@@ -1823,12 +1835,17 @@ export function ImplementWidget() {
 
       const childrenMap = new Map<string, UITreeLayerItem[]>();
       items.forEach(item => {
-        if (item.layerParent && itemMap.has(item.layerParent._id)) {
-          const parentId = item.layerParent._id;
-          if (!childrenMap.has(parentId)) {
-            childrenMap.set(parentId, []);
+        if (item.layerParent) {
+          for (const parent of item.layerParent) {
+            if (itemMap.has(parent._id)) {
+              const parentId = parent._id;
+              if (!childrenMap.has(parentId)) {
+                childrenMap.set(parentId, []);
+              }
+              childrenMap.get(parentId)!.push(itemMap.get(item.item._id)!);
+              break; // Place under the first parent found in itemMap
+            }
           }
-          childrenMap.get(parentId)!.push(itemMap.get(item.item._id)!);
         }
       });
 
@@ -1836,7 +1853,12 @@ export function ImplementWidget() {
         item.children = childrenMap.get(item.item._id) || [];
       });
 
-      const roots = Array.from(itemMap.values()).filter(item => !item.layerParent || !itemMap.has(item.layerParent._id));
+      // Determine roots: items not assigned as children to any parent
+      const allChildrenIds = new Set<string>();
+      childrenMap.forEach(children => {
+        children.forEach(child => allChildrenIds.add(child.item._id));
+      });
+      const roots = Array.from(itemMap.values()).filter(item => !allChildrenIds.has(item.item._id));
 
       baseTypeGroups.push({ baseType, baseTypeText, roots });
     }
@@ -1850,7 +1872,6 @@ export function ImplementWidget() {
     return baseTypeGroups;
   };
 
-  // Remove dublicates
   function filterLayerItems(layerItems: layerItem[]): layerItem[] {
     const seenIds = new Set<string>();
     return layerItems.filter(layerItem => {
@@ -1871,8 +1892,13 @@ export function ImplementWidget() {
     const [txt, curBase, layerItems] = await Promise.all([
       getRemText(plugin, displayedRem),
       getBaseType(plugin, displayedRem),
-      getLayers(plugin, displayedRem)
+      getLayers(plugin, displayedRem, includeCurrentLayer)
     ]);
+
+    //
+    //for(const l of layerItems) {
+    //  printLayerItem(plugin, l);
+    //}
 
     setCurrentRem(txt);
     const baseText = await getRemText(plugin, curBase);
@@ -1909,7 +1935,6 @@ export function ImplementWidget() {
     return (
       <div style={{ marginLeft: 6, marginBottom: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '10px 1fr', gap: '10px', alignItems: 'center' }}>
-          {/* Column 1: Space for the collapse button, empty if no children */}
           <div>
             {hasChildren && (
               <button
@@ -1920,7 +1945,6 @@ export function ImplementWidget() {
               </button>
             )}
           </div>
-          {/* Column 2: Main content */}
           <div>
             <MyRemNoteButton
               text={item.text}
@@ -1935,7 +1959,6 @@ export function ImplementWidget() {
             />
           </div>
         </div>
-        {/* Render children with additional indentation */}
         {!isCollapsed && hasChildren && (
           <div style={{ marginLeft: 24, marginTop: 6 }}>
             {item.children.map(child => (
@@ -1950,11 +1973,22 @@ export function ImplementWidget() {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", padding: 8 }}>
       <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
-        <MyRemNoteButton 
-          text="Load Current Rem" 
-          onClick={() => setDisplayedRem(focusedRem)} 
-          img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" 
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <MyRemNoteButton 
+            text="Load Current Rem" 
+            onClick={() => setDisplayedRem(focusedRem)} 
+            img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" 
+          />
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={includeCurrentLayer}
+              onChange={(e) => setIncludeCurrentLayer(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>Include Current Layer</span>
+          </label>
+        </div>
         <MyRemNoteButton 
           text="Expand All" 
           onClick={expandAll} 
@@ -2007,6 +2041,5 @@ export function ImplementWidget() {
     </div>
   );
 }
-
 
 renderWidget(ImplementWidget);

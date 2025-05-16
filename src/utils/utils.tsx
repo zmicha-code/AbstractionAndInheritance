@@ -769,8 +769,12 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
 
   // DESCRIPTOR with TAG. Should this happen? Cant think of a usecase
   if(type == RemType.DESCRIPTOR && !isReferencing && tags.length > 0) {
-    await plugin.app.toast('Potential Mistake: DESCRIPTOR with TAG.');
-    return [tags[0]];
+    //await plugin.app.toast('Potential Mistake: DESCRIPTOR with TAG.');
+    //return [tags[0]];
+
+    if(!parent) return null;
+
+    return [parent];
 }
 
   // DESCRIPTOR without TAG
@@ -1748,13 +1752,36 @@ export interface layerItem {
   item: Rem,
   itemType: string, // Concept, Descriptor, Slot
   layerBaseType: Rem,
-  layerParent: Rem | undefined, // The ancestor where the layer was defined/extended
+  layerParent: Rem[] | undefined, // The ancestor where the layer was defined/extended
 }
+
+//export async function printLayerItem(plugin: RNPlugin, item: layerItem) {
+//  console.log(await getRemText(plugin, item.item) + " Type: " + item.itemType + " Base: " + await getRemText(plugin, item.layerBaseType) + " Parents: " + item.layerParent?.length + " 1st: " + (item.layerParent ? await getRemText(plugin, item.layerParent[0]): "")) ;
+//}
 
 export async function printLayerItem(plugin: RNPlugin, item: layerItem) {
-  console.log(await getRemText(plugin, item.item) + " Type: " + item.itemType + "Base: " + await getRemText(plugin, item.layerBaseType) + " Parent: " + await getRemText(plugin, item.layerParent));
+  // Get the item text and base type text
+  const itemText = await getRemText(plugin, item.item);
+  const baseTypeText = await getRemText(plugin, item.layerBaseType);
+
+  // Get all parent texts, handling undefined or empty layerParent
+  const parentTexts = item.layerParent && item.layerParent.length > 0
+    ? await Promise.all(item.layerParent.map(async parent => await getRemText(plugin, parent)))
+    : [];
+
+  // Format the output
+  console.log(
+    `Item: ${itemText}\n` +
+    `Type: ${item.itemType}\n` +
+    `Base: ${baseTypeText}\n` +
+    `Parents: ${parentTexts.length}\n` +
+    (parentTexts.length > 0
+      ? `Parent Texts: [\n  ${parentTexts.map((text, index) => `${index + 1}. ${text}`).join('\n  ')}\n]`
+      : `Parent Texts: None`)
+  );
 }
 
+/*
 export async function collectLayerItems_(plugin: RNPlugin, item: layerItem, rem: Rem): Promise<layerItem[]> {
   const children = await getCleanChildrenAll(plugin, item.item);
 
@@ -1776,6 +1803,7 @@ export async function collectLayerItems_(plugin: RNPlugin, item: layerItem, rem:
 
   return result;
 }
+  */
 
 // Check if descendant is below ancestor in the hierarchy
 async function isDescendantRem(plugin: RNPlugin, ancestor: Rem, descendant: Rem | undefined): Promise<boolean> {
@@ -1804,24 +1832,19 @@ async function filterChildren(plugin: RNPlugin, children: Rem[], rem: Rem): Prom
 }
 
 export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: Rem): Promise<layerItem[]> {
-  let childrenRem = await getCleanChildren(plugin, item.item);
+  //let childrenRem = await getCleanChildren(plugin, item.item);
 
-  let childrenRef = await getCleanChildrenRef(plugin, item.item);
+  //let childrenRef = await getCleanChildrenRef(plugin, item.item);
 
   //childrenRef = await filterRefChildren(plugin, childrenRef, rem); // Ohne Einschränkungen ist glaube ich besser
 
-  let children = [...childrenRem, ...childrenRef];
+  //let children = [...childrenRem, ...childrenRef];
 
-  children = await filterChildren(plugin, children, rem); 
+  let children = await getCleanChildrenAll(plugin, item.item);
 
-  //children = (await Promise.all(childrenRem.map(async child => {
-  //  const parent = await child.getParentRem();
-  //  return parent?._id == rem._id ? null : child;
-  //}))).filter(child => child !== null);
+  //children = await filterChildren(plugin, children, rem); 
 
   let result: layerItem[] = [];
-
-  //
 
   for(const child of children) {
 
@@ -1833,20 +1856,29 @@ export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: 
     const itemType = await child.isSlot() ? "Slot" : await isConcept(plugin, child) ? "Concept" : await isDescriptor(plugin, child) ? "Descriptor" : "Something Else";
     if(childBaseType._id == item.layerBaseType._id && itemType != "Something Else" && (await child.getCards()).length == 0) {
 
-      const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()};
-      //const parentClass = await getParentClassType(plugin, child);
-      //const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: parentClass == null ? undefined : parentClass.length > 1 ? parentClass[1] : parentClass[0] };
+      //const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()};
+      let parentClass: Rem[] = []
+      if(await child.isDocument())
+          parentClass = [await child.getParentRem() as Rem];
+      else
+          parentClass = await getParentClassType(plugin, child) ?? [await child.getParentRem() as Rem];
+
+      const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: parentClass };
 
       //await printLayerItem(plugin, item);
 
       result.push(item);
+
+      result = [...result, ...await collectLayerItems(plugin, item, rem)];
+    } else {
+      //console.log(await getRemText(plugin, child) + "(" + await getRemText(plugin, childBaseType) + ") of " + await getRemText(plugin, item.item))
     }
   }
 
   return result;
 }
 
-export async function getLayers(plugin: RNPlugin, rem: Rem): Promise<layerItem[]> {
+export async function getLayers(plugin: RNPlugin, rem: Rem, includeCurrentLayer = true): Promise<layerItem[]> {
   const initialBaseType = await getBaseType(plugin, rem);
   const lineages = await getAncestorLineage(plugin, rem);
   
@@ -1860,11 +1892,6 @@ export async function getLayers(plugin: RNPlugin, rem: Rem): Promise<layerItem[]
 
   const childrenArrays = await Promise.all(ancestors.map(ancestor => getCleanChildrenAll(plugin, ancestor)));
   let allChildren = childrenArrays.flat();
-
-  //allChildren = (await Promise.all(allChildren.map(async child => {
-  //  const parent = await child.getParentRem();
-  //  return (!parent || parent === null || parent._id !== rem._id) ? child : null;
-  //}))).filter(child => child !== null);
   
   const baseTypes = await Promise.all(allChildren.map(child => getBaseType(plugin, child)));
   
@@ -1875,11 +1902,23 @@ export async function getLayers(plugin: RNPlugin, rem: Rem): Promise<layerItem[]
     const childBaseType = baseTypes[i];
 
     // Child is a Layer
+    // TODO:
+    // ((!includeCurrentLayer && initialBaseType._id != childBaseType._id) || includeCurrentLayer) && 
     const itemType = await child.isSlot() ? "Slot" : await isConcept(plugin, child) ? "Concept" : await isDescriptor(plugin, child) ? "Descriptor" : "Something Else";
-    if(!seenItems.has(child._id) && itemType != "Something Else" && (await child.getCards()).length == 0 && child._id != rem._id) {
-      const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()}
+    if(((!includeCurrentLayer && initialBaseType._id != childBaseType._id) || includeCurrentLayer) && itemType != "Something Else" && (await child.getCards()).length == 0 && child._id != rem._id) { // !seenItems.has(child._id) && 
+      //const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()};
 
-      seenItems.add(child._id)
+      let parentClass: Rem[] = []
+      if(await child.isDocument()) {
+        parentClass = [await child.getParentRem() as Rem];
+      }
+      else
+          parentClass = await getParentClassType(plugin, child) ?? [await child.getParentRem() as Rem];
+
+      const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: parentClass};
+
+      //seenItems.add(child._id)
+
       result.push(item);
       result = [...result, ...await collectLayerItems(plugin, item, rem)];
     }
