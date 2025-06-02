@@ -6,7 +6,7 @@ import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUS
           getRemText, getNextParents, referencesEigenschaften, isReferencingRem,
           isNextParent, isRemProperty, getNonReferencingParent, highestXPosition,
           highestYPosition, calcNodeHeight2, lowestYPosition,
-          isAncestor,
+          isAncestor_,
           getTagParent,
           getNextChildren,
           formatIfLayerConcept
@@ -322,7 +322,7 @@ async function collectEnvironment(
     let index = -1; // To adjust vertical positioning for multiple ancestors
     
     // Sorry this is a mess
-    let alignLeft = (await isAncestor(plugin, parentRem, currentRem) || parentRem == currentRem) && !((await currentRem.getCards()).length > 0);
+    let alignLeft = (await isAncestor_(plugin, parentRem, currentRem) || parentRem == currentRem) && !((await currentRem.getCards()).length > 0);
 
     if(ancestor && (await ancestor.getType()) == RemType.DESCRIPTOR) {
       const nextAncestor = await ancestor.getParentRem();

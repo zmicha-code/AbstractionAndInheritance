@@ -1,13 +1,14 @@
 import { declareIndexPlugin, ReactRNPlugin, WidgetLocation,
   Rem, RemType, SetRemType,
   RichTextElementRemInterface, RichTextInterface, 
-  RNPlugin} from '@remnote/plugin-sdk';
+  RNPlugin,
+  RICH_TEXT_FORMATTING} from '@remnote/plugin-sdk';
 
 import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUSED_NODE_STYLE,
    getRemText, getNextParents, getAllParents, referencesEigenschaften, isReferencingRem,
    isNextParent, isRemProperty, getNonReferencingParent, highestXPosition,
    highestYPosition, calcNodeHeight2, lowestYPosition,
-   isAncestor,
+   isAncestor_,
    getTagParent,
    getNextChildren,
    formatIfLayerConcept,
@@ -20,14 +21,22 @@ import '../style.css';
 import '../App.css';
 
 // Function to set a Rem to reference another Rem
-async function setRemToReference(plugin: ReactRNPlugin, newReference: Rem, referencingRem: Rem): Promise<void> {
-  const referenceElement: RichTextElementRemInterface = {
-      i: 'q',
-      _id: newReference._id
-  };
-  const richText: RichTextInterface = [referenceElement];
-  await referencingRem.setText(richText);
-  await referencingRem.setType(SetRemType.DESCRIPTOR);
+async function setRemToReference(plugin: ReactRNPlugin, newReference: Rem, oldReference: Rem, referencingRem: Rem) {
+  const remText = referencingRem.text;
+  const updatedText = remText.map(element => {
+      if (typeof element === 'object') {
+          if (element.i === 'q' && element._id === oldReference._id) {
+              return { ...element, _id: newReference._id };
+          } else if (element.i === 'm' && element[RICH_TEXT_FORMATTING.INLINE_LINK] === oldReference._id) {
+              return { ...element, [RICH_TEXT_FORMATTING.INLINE_LINK]: newReference._id };
+          } else {
+              return element;
+          }
+      } else {
+          return element;
+      }
+  });
+  await referencingRem.setText(updatedText);
 }
 
 // Main function to handle the "/implement" command
@@ -37,6 +46,7 @@ async function handleImplementCommand(plugin: ReactRNPlugin): Promise<void> {
 }
 
 // Handler for the "extrudeLayer" command
+/*
 async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
   const focusedRem = await plugin.focus.getFocusedRem();
   if (!focusedRem) {
@@ -68,56 +78,91 @@ async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
 
   await plugin.app.toast(`Updated ${referencingRems.length} Rems to reference the target Rem.`);
 }
+  */
+
+async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
+  const focusedRem = await plugin.focus.getFocusedRem();
+  if (!focusedRem) {
+    await plugin.app.toast('No Rem is currently selected.');
+    return;
+  }
+
+  // Check if the focused Rem is referencing another Rem
+  const referencedRems = await focusedRem.remsBeingReferenced();
+  if (referencedRems.length === 0) {
+    await plugin.app.toast('The selected Rem does not reference any other Rem.');
+    return;
+  }
+
+  // Assuming the focused Rem references only one Rem
+  const targetRem = referencedRems[0];
+
+  // Get all Rems that reference the focused Rem
+  const referencingRems = await focusedRem.remsReferencingThis();
+  if (referencingRems.length === 0) {
+    await plugin.app.toast('No Rems are referencing the selected Rem.');
+    return;
+  }
+
+  // Update each referencing Rem to reference the target Rem
+  for (const refRem of referencingRems) {
+    await setRemToReference(plugin, targetRem, focusedRem, refRem);
+  }
+
+  await plugin.app.toast(`Updated ${referencingRems.length} Rems to reference the target Rem.`);
+}
 
 async function isAncestor2(plugin: RNPlugin, ancestor: Rem, rem: Rem): Promise<boolean> {
 
-  const ancestors = (await getAncestorLineage(plugin, rem))[0];
+  const lineages = (await getAncestorLineage(plugin, rem)); // const ancestors = (await getAncestorLineage(plugin, rem))[0];
 
-  for(const a of ancestors) {
-    if(ancestor._id == a._id)
-      return true;
+  for(const l of lineages) {
+    for(const a of l) {
+      if(ancestor._id == a._id)
+        return true;
+    }
   }
 
   return false;
 }
 
-// RemA has child RemB which has child RemC and C is referencing e.g. Eigenschaften from A. If
-// i now want B to reference Eigenschaften from A i have to update C to reference Eigenschaften from B.
+// RemA has child RemB which has child RemC and C is referencing a PROPERTY from A. If
+// i now want to implement that PROPERTY in B, i would have to update C to reference the PROPERTY from B. (TO KEEP A PROPER INHERITANCE)
 // TODO: Currently only updates Rem Hierarchie Children and Nor Children that are Referencing
 async function handleInsertCommand(plugin: ReactRNPlugin): Promise<void> {
-  const eigenschaftenB = await plugin.focus.getFocusedRem();
+  const newPropertyB = await plugin.focus.getFocusedRem();
 
-  // Ensure the focused Rem is a descriptor
-  if (!eigenschaftenB || (await eigenschaftenB.getType()) !== RemType.DESCRIPTOR) {
-    await plugin.app.toast('Selected Rem is not a descriptor.');
+  // 
+  if (!newPropertyB) { //  || (await newLayerB.getType()) !== RemType.DESCRIPTOR
+    await plugin.app.toast('Selected Rem is not valid.');
     return;
   }
 
-  const remB = await eigenschaftenB.getParentRem();
-  if (!remB) { // || (await remB.getType()) !== RemType.CONCEPT
+  const layerBClass = await newPropertyB.getParentRem();
+  if (!layerBClass) { // || (await remB.getType()) !== RemType.CONCEPT
     await plugin.app.toast('Selected Rem does not have a valid parent.');
     return;
   }
 
   // Get the Rem that the focused descriptor is referencing
-  const referencedRems = await eigenschaftenB.remsBeingReferenced();
+  const referencedRems = await newPropertyB.remsBeingReferenced();
   if (referencedRems.length === 0) {
     await plugin.app.toast('The selected descriptor does not reference any Rem.');
     return;
   }
 
   // Assuming the descriptor references only one Rem
-  const eigenschaftenA = referencedRems[0];
+  const layerAProperty = referencedRems[0];
 
   // Get all Rems directly referencing the target Rem
-  const eigenschaftenCAndSoOn = await eigenschaftenA.remsReferencingThis();
+  const allLayerCProperties = await layerAProperty.remsReferencingThis();
 
   //console.log(await getRemText(plugin, eigenschaftenA) + " has deepRemsBeingReferenced: " + eigenschaftenCAndSoOn.length);
 
   // Remove the focusedRem from the children list
-  const _eigenschaftenCAndSoOn = eigenschaftenCAndSoOn.filter(child => child._id !== eigenschaftenB._id);
+  const layerCProperties = allLayerCProperties.filter(child => child._id !== newPropertyB._id);
 
-  if (_eigenschaftenCAndSoOn.length === 0) {
+  if (layerCProperties.length === 0) {
     await plugin.app.toast('No other Rems reference the target Rem.');
     return;
   }
@@ -126,16 +171,15 @@ async function handleInsertCommand(plugin: ReactRNPlugin): Promise<void> {
   let updatedCount = 0;
 
   // TODO: update only children that are in the hierarchie below the focused rem
-  for (const eigenschaftenC of _eigenschaftenCAndSoOn) {
-    const remC = await eigenschaftenC.getParentRem();
+  for (const layerCProperty of layerCProperties) {
 
-    if (!remC) { // || (await remC.getType()) !== RemType.CONCEPT
-      continue;
-    }
+    const layerCClass = await layerCProperty.getParentRem();
 
-    // Check if the child's parent concept is a descendant of the focusedRem's parent
-    if (await isAncestor2(plugin, remB, remC)) {
-      await setRemToReference(plugin, eigenschaftenB, eigenschaftenC);
+    if(!layerCClass) continue;
+
+    // Check if the rem is a descendant of the focusedRem
+    if (await isAncestor2(plugin, layerBClass, layerCClass)) {
+      await setRemToReference(plugin, newPropertyB, layerAProperty, layerCProperty);
       updatedCount++;
     } else {
       //console.log(await getRemText(plugin, remC) + " is not a descendant of " + await getRemText(plugin, remB));
@@ -216,9 +260,11 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register the "extrudeLayer" command
+
   await plugin.app.registerCommand({
     id: 'extrude-command',
     name: 'Extrude Layer',
+    description: 'Makes all Rem, that reference this Rem, to reference the Rem, the current Rem is referencing, instead.',
     quickCode: 'extrude',
     action: async () => {
       await handleExtrudeCommand(plugin);
@@ -228,7 +274,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   // Register the "insertLayer" command
   await plugin.app.registerCommand({
     id: 'insert-command',
-    name: 'Insert Layer',
+    name: 'Insert Property Layer',
     quickCode: 'insert',
     action: async () => {
       await handleInsertCommand(plugin);

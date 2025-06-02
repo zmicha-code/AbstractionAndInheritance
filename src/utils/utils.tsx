@@ -1,6 +1,7 @@
 import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, RemType, REM_TYPE } from "@remnote/plugin-sdk";
 
 import { NodeData } from "../components/Nodes";
+import { layout } from "dagre";
 
 export const specialTags = ["Document", "Template Slot", "Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight", "Hide Bullets", "Status"];
 
@@ -225,6 +226,27 @@ export async function isRemAncestor(
   return false;
 }
 
+// Check if ancestor appearts in any of rems ancestor lineages.
+export async function isAncestor(plugin: RNPlugin, ancestor: Rem | undefined, rem: Rem): Promise<boolean> {
+
+  if(!ancestor) return false;
+
+  if(ancestor._id == rem._id) return true;
+
+  const lineages = await getAncestorLineage(plugin, rem);
+
+  //console.log(await getRemText(plugin, rem) + " Ancestor Lineage: " + await getAncestorLineageString(plugin, rem));
+
+  for(const l of lineages) {
+    for(const a of l) {
+      if(a._id == ancestor._id)
+        return true;
+    }
+  }
+
+  return false;
+}
+
 /*
 export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 
@@ -371,7 +393,7 @@ export async function getImmediateParents(plugin: RNPlugin, rem: Rem): Promise<R
   return parents;
 }
 
-export async function isAncestor(plugin: RNPlugin, ancestor: Rem, descendant: Rem, visited: Set<string> = new Set<string>()): Promise<boolean> {
+export async function isAncestor_(plugin: RNPlugin, ancestor: Rem, descendant: Rem, visited: Set<string> = new Set<string>()): Promise<boolean> {
   if (visited.has(descendant._id)) {
     //console.log("LOOP DETECTED" + getRemText(ancestor)); // TODO: VISUAL
     return false; // Cycle detected
@@ -384,7 +406,7 @@ export async function isAncestor(plugin: RNPlugin, ancestor: Rem, descendant: Re
     if (parent._id === ancestor._id) {
       return true; // Found the ancestor
     }
-    if (await isAncestor(plugin, ancestor, parent, visited)) {
+    if (await isAncestor_(plugin, ancestor, parent, visited)) {
       return true; // Ancestor found higher up
     }
   }
@@ -400,7 +422,7 @@ export async function getNextParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
   for (const P of parents) {
     let isValid = true;
     for (const Q of parents) {
-      if (Q._id !== P._id && await isAncestor(plugin, P, Q)) {
+      if (Q._id !== P._id && await isAncestor_(plugin, P, Q)) {
         isValid = false;
         break;
       }
@@ -1831,22 +1853,15 @@ async function filterChildren(plugin: RNPlugin, children: Rem[], rem: Rem): Prom
   return validChildren;
 }
 
-export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: Rem): Promise<layerItem[]> {
-  //let childrenRem = await getCleanChildren(plugin, item.item);
-
-  //let childrenRef = await getCleanChildrenRef(plugin, item.item);
-
-  //childrenRef = await filterRefChildren(plugin, childrenRef, rem); // Ohne Einschränkungen ist glaube ich besser
-
-  //let children = [...childrenRem, ...childrenRef];
+export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: Rem, seenItems: Set<string>): Promise<layerItem[]> {
 
   let children = await getCleanChildrenAll(plugin, item.item);
-
-  //children = await filterChildren(plugin, children, rem); 
 
   let result: layerItem[] = [];
 
   for(const child of children) {
+
+    if(seenItems.has(child._id)) continue;
 
     if(child._id == rem._id || (await child.getParentRem())?._id == rem._id)
       continue;
@@ -1854,7 +1869,17 @@ export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: 
     const childBaseType = await getBaseType(plugin, child);
 
     const itemType = await child.isSlot() ? "Slot" : await isConcept(plugin, child) ? "Concept" : await isDescriptor(plugin, child) ? "Descriptor" : "Something Else";
+
     if(childBaseType._id == item.layerBaseType._id && itemType != "Something Else" && (await child.getCards()).length == 0) {
+
+      //console.log(await getRemText(plugin, child));
+
+      // Only include properties that were defined in an ancestor of rem.
+      const baseTypeParent = await childBaseType.getParentRem(); // In case the basetype is highest document
+      if(!((!baseTypeParent && await isAncestor(plugin, childBaseType, rem)) || await isAncestor(plugin, baseTypeParent, rem))) {
+        //console.log(await getRemText(plugin, childBaseType) + " is not an ancestor of " + await getRemText(plugin, rem));
+        continue;
+      }
 
       //const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()};
       let parentClass: Rem[] = []
@@ -1867,9 +1892,11 @@ export async function collectLayerItems(plugin: RNPlugin, item: layerItem, rem: 
 
       //await printLayerItem(plugin, item);
 
+      seenItems.add(item.item._id);
+
       result.push(item);
 
-      result = [...result, ...await collectLayerItems(plugin, item, rem)];
+      result = [...result, ...await collectLayerItems(plugin, item, rem, seenItems)];
     } else {
       //console.log(await getRemText(plugin, child) + "(" + await getRemText(plugin, childBaseType) + ") of " + await getRemText(plugin, item.item))
     }
@@ -1896,18 +1923,18 @@ export async function getLayers(plugin: RNPlugin, rem: Rem, includeCurrentLayer 
   const baseTypes = await Promise.all(allChildren.map(child => getBaseType(plugin, child)));
   
   const seenItems = new Set<string>();
+
+  // Children of Ancestors
   let result: layerItem[] = [];
   for (let i = 0; i < allChildren.length; i++) {
     const child = allChildren[i];
     const childBaseType = baseTypes[i];
 
-    // Child is a Layer
-    // TODO:
+    if(seenItems.has(child._id)) continue;
+
     // ((!includeCurrentLayer && initialBaseType._id != childBaseType._id) || includeCurrentLayer) && 
     const itemType = await child.isSlot() ? "Slot" : await isConcept(plugin, child) ? "Concept" : await isDescriptor(plugin, child) ? "Descriptor" : "Something Else";
     if(((!includeCurrentLayer && initialBaseType._id != childBaseType._id) || includeCurrentLayer) && itemType != "Something Else" && (await child.getCards()).length == 0 && child._id != rem._id) { // !seenItems.has(child._id) && 
-      //const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: await child.getParentRem()};
-
       let parentClass: Rem[] = []
       if(await child.isDocument()) {
         parentClass = [await child.getParentRem() as Rem];
@@ -1917,10 +1944,12 @@ export async function getLayers(plugin: RNPlugin, rem: Rem, includeCurrentLayer 
 
       const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: parentClass};
 
-      //seenItems.add(child._id)
+      seenItems.add(child._id)
+
+      //await printLayerItem(plugin, item);
 
       result.push(item);
-      result = [...result, ...await collectLayerItems(plugin, item, rem)];
+      result = [...result, ...await collectLayerItems(plugin, item, rem, seenItems)];
     }
     //if (childBaseType._id !== initialBaseType._id && !seenBaseTypes.has(childBaseType._id)) {
     //  result.push(child);
