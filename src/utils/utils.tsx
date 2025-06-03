@@ -1943,10 +1943,12 @@ export async function getLayers(plugin: RNPlugin, rem: Rem, includeCurrentLayer 
     const itemType = await child.isSlot() ? "Slot" : await isConcept(plugin, child) ? "Concept" : await isDescriptor(plugin, child) ? "Descriptor" : "Something Else";
     if(((!includeCurrentLayer && initialBaseType._id != childBaseType._id) || includeCurrentLayer) && itemType != "Something Else" && (await child.getCards()).length == 0 && child._id != rem._id) { // !seenItems.has(child._id) && 
       let parentClass: Rem[] = []
-      if(await child.isDocument()) {
-        parentClass = [await child.getParentRem() as Rem];
-      }
-      else
+
+      // TODO
+      //if(await child.isDocument()) {
+      //  parentClass = [await child.getParentRem() as Rem];
+      //}
+      //else
           parentClass = await getParentClassType(plugin, child) ?? [await child.getParentRem() as Rem];
 
       const item: layerItem = { item: child, itemType: itemType, layerBaseType: childBaseType, layerParent: parentClass};
