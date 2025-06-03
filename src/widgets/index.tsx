@@ -275,6 +275,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   await plugin.app.registerCommand({
     id: 'insert-command',
     name: 'Insert Property Layer',
+    description: 'Inserts a Property into the Hierarchie by making all Descendant Properties reference this Property instead of the Property of the Ancestor. A-X -> A-B-X',
     quickCode: 'insert',
     action: async () => {
       await handleInsertCommand(plugin);

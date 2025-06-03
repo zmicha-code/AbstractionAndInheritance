@@ -733,6 +733,13 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
     return null;
   } 
 
+  //
+  if(isDocument && isReferencing) {
+    const referencedRem = (await rem.remsBeingReferenced())[0];
+
+    return [referencedRem];
+  }
+
   // DOCUMENT without TAGS. Defines a new Type. Has no other parent Type
   if (isDocument)
     return [rem];
