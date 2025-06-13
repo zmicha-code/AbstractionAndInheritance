@@ -244,7 +244,12 @@ async function onActivate(plugin: ReactRNPlugin) {
   //  dimensions: { height: 'auto', width: '100%' },
   //});
 
-  await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
+  //await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
+  //  dimensions: { height: 'auto', width: '100%' },
+  //  widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
+  //});
+
+  await plugin.app.registerWidget('properties_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
     widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
   });

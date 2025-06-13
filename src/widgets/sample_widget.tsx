@@ -982,8 +982,7 @@ function InheritanceWidget() {
           onClick={async () => {
             const remId = await plugin.storage.getSession('selectedRemId');
             await plugin.window.openRem((await plugin.rem.findOne(remId as string)) as Rem);
-          }}
-        />
+          } } title={""}        />
         <MyRemNoteButton
           img="M17.651 7.65a7.131 7.131 0 0 0-12.68 3.15M18.001 4v4h-4m-7.652 8.35a7.13 7.13 0 0 0 12.68-3.15M6 20v-4h4"
           text="Refresh"
@@ -991,8 +990,7 @@ function InheritanceWidget() {
             const remId = await plugin.storage.getSession('selectedRemId');
             await plugin.storage.setSession('selectedRemId', 0);
             await plugin.storage.setSession('selectedRemId', remId);
-          }}
-        />
+          } } title={""}        />
         <label className="flex items-center gap-1">
           <input
             type="checkbox"
@@ -1016,15 +1014,13 @@ function InheritanceWidget() {
           text="Back"
           onClick={async () => {
             // TODO
-          }}
-        />
+          } } title={""}        />
         <MyRemNoteButton
           img="M19 12H5m14 0-4 4m4-4-4-4"
           text="Forward"
           onClick={async () => {
             // TODO
-          }}
-        />
+          } } title={""}        />
       </div>
       <div style={{ height: "100%", width: "100%" }}>
         {selectedRemId ? (

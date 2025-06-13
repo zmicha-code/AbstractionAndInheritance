@@ -5,9 +5,10 @@ interface MyRemNoteButtonProps {
   text: string; // Button label
   onClick: () => void; // Click handler
   active?: boolean;
+  title: string;
 }
 
-const MyRemNoteButton: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, active = true }) => {
+const MyRemNoteButton: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, title = "", active = true}) => {
   return (
     <button
       className={`py-1.5 px-3 h-8 rn-clr-background-primary inline-flex items-center rounded-md border-0 ${
@@ -16,6 +17,7 @@ const MyRemNoteButton: React.FC<MyRemNoteButtonProps> = ({ img, text, onClick, a
           : 'bg-gray-300 text-gray-500 cursor-not-allowed'
       }`}
       onClick={onClick}
+      title={title}
     >
       {img && (
         <div style={{ display: 'flex', alignItems: 'center', paddingRight: '8px' }}>
