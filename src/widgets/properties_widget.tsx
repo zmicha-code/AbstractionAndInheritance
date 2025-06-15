@@ -206,7 +206,7 @@ function PropertiesWidget() {
                         key={p.property._id}
                         text={p.propertyName}
                         onClick={() => handleCopyClick(p.property)}
-                        title={p.propertyParentRemName}
+                        title={p.baseTypeName}
                     />
                 </div>))}
             </div>
