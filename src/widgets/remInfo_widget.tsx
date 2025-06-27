@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RNPlugin, RemType } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 import { RemViewer } from '@remnote/plugin-sdk';
-import { specialTags, getRemText, isReferencingRem, getParentClassType, getAncestorLineageStrings, getClassProperties, getClassDescriptors } from '../utils/utils';
+import { specialTags, getRemText, isReferencingRem, getParentClass, getAncestorLineageStrings, getClassProperties, getClassDescriptors } from '../utils/utils';
 
 // Assuming Rem is a type defined elsewhere, e.g., imported from a library
 interface ListComponentProps {
@@ -87,7 +87,7 @@ export function RemInfoWidget() {
                 focusedRem.remsBeingReferenced(),
                 focusedRem.deepRemsBeingReferenced(),
                 // TODO: Multiple Lineages
-                getParentClassType(plugin, focusedRem),
+                getParentClass(plugin, focusedRem),
                 getAncestorLineageStrings(plugin, focusedRem)
                 ]);
 

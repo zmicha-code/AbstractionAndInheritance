@@ -649,7 +649,7 @@ export async function isClassAncestor(plugin: RNPlugin, potentialAncestor: Rem, 
   let currentRem: Rem | null = rem;
 
   while (currentRem && !await currentRem.isDocument()) {
-    const classType = await getParentClassType(plugin, currentRem);
+    const classType = await getParentClass(plugin, currentRem);
 
     if(classType == null) return false;
 
@@ -744,7 +744,7 @@ export async function isSameBaseType(
 }
 
 // Function to get the closest class parent for a Rem
-export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   if (!rem) return [];
 
   const parent = await rem.getParentRem();
@@ -754,128 +754,127 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
   const isSlot = await rem.isSlot();
   const tags = await getCleanTags(plugin, rem);
 
-  // DOCUMENT with TAGS. This should never happen. A DOCUMENT should always define a new type and therefore have no parents through tags.
-  if (isDocument && tags.length > 0) {
+  // ############################
+  // DOCUMENT
+  // ############################
+  // DOCUMENT + TAGS: This should never happen. A DOCUMENT should always define a new type or inherit through reference and therefore have no parents through tags.
+  if (isDocument && !isReferencing && tags.length > 0) {
     await plugin.app.toast('Mistake: DOCUMENT with TAG. (' + await getRemText(plugin, rem) + ")");
     //return tags[0];
     return [rem];
   } 
 
-  //
+  // DOCUMENT + REF: Inherit Type from REF
   if(isDocument && isReferencing) {
     const referencedRem = (await rem.remsBeingReferenced())[0];
 
     return [referencedRem];
   }
 
-  // DOCUMENT without TAGS. Defines a new Type. Has no other parent Type
-  if (isDocument)
+  // DOCUMENT: Defines a new Type.
+  if (isDocument) {
     return [rem];
+  }
 
-  // SLOT with TAG.
-  // NEW: We dont use TAGS for inheritance any more
-  if(isSlot && tags.length > 0) {
+  // ############################
+  // SLOT
+  // ############################
+  // SLOT + TAG: We dont use TAGS for inheritance any more
+  if(isSlot && !isReferencing && tags.length > 0) {
     await plugin.app.toast('Mistake: SLOT with TAG. (' + await getRemText(plugin, rem) + ")");
     //return [tags[0]];
     return [];
   }
 
+  // SLOT + REF: Inherit Type from REF
   if(isSlot && isReferencing) {
     const referencedRem = (await rem.remsBeingReferenced())[0];
     return [referencedRem]
   }
 
-  // SLOT without TAG: Property of new Type
+  // SLOT: Property of new Type
   if(isSlot) {
     //await plugin.app.toast('Mistake: SLOT without TAG.' + (await getRemText(plugin, rem)) + ")");
     return [rem];
   }
 
+  // ############################
+  // CONCEPT
+  // ############################
   // CONCEPT, DOCUMENT, without TAGS
   // Case already covered with isDocument
   //if(type === RemType.CONCEPT && isDocument && tags.length == 0) {
   //  return rem;
   //}
 
-  // CONCEPT with TAGS
-  // OLD: Inherits Type from TAG
-  // NEW: Inheritance no longer through TAGS but with REFS like in the case of DESCRIPTORS instead
-  if (type === RemType.CONCEPT && tags.length > 0) {
+  // CONCEPT + TAG:Inheritance no longer through TAGS but with REFS like in the case of DESCRIPTORS instead
+  if (type === RemType.CONCEPT && !isReferencing && tags.length > 0) {
     await plugin.app.toast('Mistake: CONCEPT with TAG. (' + await getRemText(plugin, rem) + ")");
     return [rem]; // [tags[0]];
   } 
 
-  // Inherits Type from REF
+  // CONCEPT + REF: Inherits Type from REF
   if(type === RemType.CONCEPT && isReferencing) {
     const referencedRem = (await rem.remsBeingReferenced())[0];
 
-    if(parent && await isSameBaseType(plugin, referencedRem, parent))
-      return [parent, referencedRem]
+    if(parent) {
+      if(await isSameBaseType(plugin, referencedRem, parent)) {
+        // Interface implementation
+        return [parent, referencedRem]
+      }
 
-    return [referencedRem];
+      // NEW: Otherwise Base Class is Rem Parent NOT REF
+      return [parent]
+    }
+
+    return [rem]; // OLD: return [referencedRem];
   }
   
-  // Concept, without TAGS
-  // Inherits Type from Rem Parent
-  if (type === RemType.CONCEPT && tags.length == 0) {
+  // CONCEPT: Inherits Type from Rem Parent
+  if (type === RemType.CONCEPT) {
 
       if(!parent) return [rem]; // || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition"
 
       return [parent];
   } 
 
-  // DESCRIPTOR with TAG. Should this happen? Cant think of a usecase
+  // ############################
+  // DESCRIPTOR
+  // ############################
+  // DESCRIPTOR + TAG: Should this happen? Cant think of a usecase
   if(type == RemType.DESCRIPTOR && !isReferencing && tags.length > 0) {
-    //await plugin.app.toast('Potential Mistake: DESCRIPTOR with TAG.');
+    await plugin.app.toast('Potential Mistake: DESCRIPTOR with TAG.');
     //return [tags[0]];
 
     if(!parent) return [rem];
 
     return [parent];
-}
+  }
 
-  // DESCRIPTOR without TAG
-  // Defines an interface with the type of the parent rem
-  if(type == RemType.DESCRIPTOR && !isReferencing && tags.length == 0) {
+  // DESCRIPTOR + REF: Implements a layer with type of reference
+  if (type === RemType.DESCRIPTOR && isReferencing) {
+      const referencedRem = (await rem.remsBeingReferenced())[0];
+
+      // Special case (Interface implementation/Same Type): referenced Rem's parent is an ancestor of descriptor's parent
+      if(parent) {
+        if(await isSameBaseType(plugin, referencedRem, parent)) {
+          // Interface implementation
+          return [parent, referencedRem]
+        }
+
+        // NEW: Otherwise Base Class is Rem Parent NOT REF
+        return [parent]
+      }
+
+      return [rem];
+  }
+
+  // DESCRIPTOR: Defines an interface with the type of the parent rem
+  if(type == RemType.DESCRIPTOR) {
     // Soon deprecated
     if(!parent) return [rem]; // || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition"
 
     return [parent];
-  }
-
-  // REF DESCRIPTOR with TAG
-  // TODO?
-
-  // REF DESCRIPTOR without TAG
-  // Implements a layer with type of reference
-  if (type === RemType.DESCRIPTOR && isReferencing) {
-      const referencedRem = (await rem.remsBeingReferenced())[0];
-
-      const referencedClass = referencedRem; //await getParentClassType(plugin, referencedRem);
-
-      if(await referencedRem.isDocument()) {
-        //console.log("Referenced Rem is document");
-
-        return [referencedClass];
-      }
-
-      // Special case (Interface implementation/Same Type): referenced Rem's parent is an ancestor of descriptor's parent
-      // TODO: Multiple lineages?
-      if (referencedClass && parent && await isSameBaseType(plugin, referencedClass, parent)) { // await isClassAncestor(plugin, referencedClass, parent)
-
-        // TODO:
-
-        //console.log("We are here");
-
-        return [parent, referencedClass];
-      } else {
-        // Inherit from the referenced Rem's class type
-        //return getClassType(plugin, referencedRem);
-
-        //console.log("REF DESCRIPTOR " + await getRemText(plugin, rem) + " is of type " + await getRemText(plugin, referencedRem));
-
-        return [referencedRem];
-      }
   }
 
   return [rem]; // Default case, though should be handled above
@@ -888,7 +887,7 @@ export async function getAncestorLineageOld(plugin: RNPlugin, rem: Rem): Promise
 
   while (currentRem) {
 
-      const classType = await getParentClassType(plugin, currentRem);
+      const classType = await getParentClass(plugin, currentRem);
 
       if (classType && !visited.has(classType[0]._id)) {
         lineage.push(classType[0]);
@@ -909,7 +908,7 @@ export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Re
 }
 
 async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]): Promise<Rem[][]> {
-  const parents = (await getParentClassType(plugin, currentRem)) || [];
+  const parents = (await getParentClass(plugin, currentRem)) || [];
 
   if (parents.length === 1 && parents[0]._id === currentRem._id) {
     return [currentPath];
@@ -934,7 +933,7 @@ export async function getAncestorLineageString_(plugin: RNPlugin, rem: Rem): Pro
   let currentRem: Rem | null = rem;
 
   while (currentRem) {
-      const classType = await getParentClassType(plugin, currentRem);
+      const classType = await getParentClass(plugin, currentRem);
       if (classType && !visited.has(classType[0]._id)) {
         lineage.push(classType[0]);
         visited.add(classType[0]._id);
@@ -1065,12 +1064,12 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
 
 export async function hasClassProperty(plugin: RNPlugin, properties: Rem[], property: Rem): Promise<boolean> {
 
-  const classType = await getParentClassType(plugin, property);
+  const classType = await getParentClass(plugin, property);
 
   if(!classType) return false;
 
   for(const p of properties) {
-    const pClassType = await getParentClassType(plugin, p);
+    const pClassType = await getParentClass(plugin, p);
 
     if(!pClassType) return false;
 
@@ -1941,7 +1940,7 @@ export async function collectLayerItems(plugin: RNPlugin, item: Rem, targetBaseT
   if (itemType !== "Something Else" && (await item.getCards()).length === 0 && (await item.isCardItem() == false) && item._id !== rem._id &&
       ( ((!collectProperties) || (await isAncestor(plugin, await getEncapsulatingClass(plugin, item), rem) && collectProperties)))) { // ((!collectProperties) || (await isAncestor(plugin, await getEncapsulatingClass(plugin, item), rem) && collectProperties)))
     let parentClass: Rem[] = [];
-    parentClass = (await isReferencingRem(plugin, item)) ? await getParentClassType(plugin, item) : [await item.getParentRem() as Rem];
+    parentClass = (await isReferencingRem(plugin, item)) ? await getParentClass(plugin, item) : [await item.getParentRem() as Rem];
 
     const layerItem: layerItem = { item, itemType, layerBaseType: targetBaseType, layerParent: parentClass, fullPath: await getFullPath(plugin, item)};
     result.push(layerItem);
@@ -2046,7 +2045,7 @@ export async function collectLayerItems2(plugin: RNPlugin, ancestor: Rem, rem: R
     if(!sameType && cBaseType._id != remBaseType._id) {
       // Add Property
       const cType = c.type == RemType.CONCEPT ? "Concept" : c.type == RemType.DESCRIPTOR ? "Descriptor" : "Something Else";
-      const parentClass: Rem[] = (await isReferencingRem(plugin, c)) ? await getParentClassType(plugin, c) : [await c.getParentRem() as Rem];
+      const parentClass: Rem[] = (await isReferencingRem(plugin, c)) ? await getParentClass(plugin, c) : [await c.getParentRem() as Rem];
       const layerItem: layerItem = { item: c, itemType: cType, layerBaseType: cBaseType, layerParent: parentClass, fullPath: await getFullPath(plugin, c)};
       result.push(layerItem);
 
@@ -2075,7 +2074,7 @@ export async function collectLayerItems2(plugin: RNPlugin, ancestor: Rem, rem: R
     if(sameType && cBaseType._id == remBaseType._id) {
       // Add Interface
       const cType = c.type == RemType.CONCEPT ? "Concept" : c.type == RemType.DESCRIPTOR ? "Descriptor" : "Something Else";
-      const parentClass: Rem[] = (await isReferencingRem(plugin, c)) ? await getParentClassType(plugin, c) : [await c.getParentRem() as Rem];
+      const parentClass: Rem[] = (await isReferencingRem(plugin, c)) ? await getParentClass(plugin, c) : [await c.getParentRem() as Rem];
       const layerItem: layerItem = { item: c, itemType: cType, layerBaseType: cBaseType, layerParent: parentClass, fullPath: await getFullPath(plugin, c)};
       result.push(layerItem);
 

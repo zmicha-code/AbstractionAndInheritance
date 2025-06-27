@@ -1,7 +1,7 @@
 import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useMemo, useState } from 'react';
-import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClassType, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData, printLayerItem, getLayers2} from '../utils/utils';
+import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClass, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData, printLayerItem, getLayers2} from '../utils/utils';
 import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // Define interface for descriptor items
@@ -79,7 +79,7 @@ async function isSibling(plugin: RNPlugin, rem: Rem, root: Rem): Promise <boolea
 async function isOfSpecificType(plugin: RNPlugin, rem: Rem, root: Rem): Promise<boolean> {
 
     const ancestors = (await getAncestorLineage(plugin, root))[0];
-    const remType = await getParentClassType(plugin, rem);
+    const remType = await getParentClass(plugin, rem);
 
     if(remType == null) return false;
 
@@ -183,7 +183,7 @@ async function getDescriptors(plugin: RNPlugin, focusedRem: Rem): Promise<Descri
     }
 
     const parentRem = await focusedRem.getParentRem();
-    const parentRemAncestor = await getParentClassType(plugin, parentRem as Rem);
+    const parentRemAncestor = await getParentClass(plugin, parentRem as Rem);
     const ancestorRems = (await getAncestorLineage(plugin, focusedRem))[0]; 
 
     if (ancestorRems.length === 0) {
