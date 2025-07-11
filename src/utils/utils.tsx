@@ -743,7 +743,7 @@ export async function isSameBaseType(
   return base1._id === base2._id;
 }
 
-// Function to get the closest class parent for a Rem
+// Returns the Class(es) (Rems) this Rem inherits from
 export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   if (!rem) return [];
 

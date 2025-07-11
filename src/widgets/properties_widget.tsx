@@ -3,7 +3,14 @@ import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RemType, Queue } fr
 import { getAncestorLineage, getBaseType, getRemText, getEncapsulatingClass, getCleanChildren } from "../utils/utils";
 import MyRemNoteButton from "../components/MyRemNoteButton";
 
-interface PropertyLayer{
+enum FieldType {
+    Property,
+    Interface,
+    Subclass
+}
+
+interface ClassField {
+    fieldType: FieldType,
     baseType: Rem,                  // The Root Class of the Property Layer
     baseTypeName: string,
     baseTypeParentRem: Rem,         // The Class where the Property Base is defined in.
@@ -14,7 +21,7 @@ interface PropertyLayer{
     propertyParentRemName: string
 };
 
-async function hasElementWithBase(plugin: RNPlugin, propertyList: PropertyLayer[], property: Rem): Promise<boolean> {
+async function hasElementWithBase(plugin: RNPlugin, propertyList: ClassField[], property: Rem): Promise<boolean> {
 
     const propertyBase = await getBaseType(plugin, property);
 
@@ -29,7 +36,7 @@ async function hasElementWithBase(plugin: RNPlugin, propertyList: PropertyLayer[
 }
 
 // Find PropertyLayer in 'propertyList' that has 'base' as base type.
-async function findElementWithBase(plugin: RNPlugin, propertyList: PropertyLayer[], base: Rem): Promise<PropertyLayer | undefined> {
+async function findElementWithBase(plugin: RNPlugin, propertyList: ClassField[], base: Rem): Promise<ClassField | undefined> {
 
     for(const p of propertyList) {
 
@@ -56,9 +63,9 @@ async function isHigherInHierarchie(plugin: RNPlugin, high: Rem, low: Rem): Prom
     return false;
 }
 
-async function getProperties(plugin: RNPlugin, rem: Rem): Promise<PropertyLayer[]> {
+async function getProperties(plugin: RNPlugin, rem: Rem): Promise<ClassField[]> {
 
-    let results: PropertyLayer[] = [];
+    let results: ClassField[] = [];
 
     const remBaseType = await getBaseType(plugin, rem);
 
@@ -69,16 +76,24 @@ async function getProperties(plugin: RNPlugin, rem: Rem): Promise<PropertyLayer[
             const children = await getCleanChildren(plugin, a);
 
             for(const c of children) {
+                
+                const cType = await c.getType();
+
+                //
+                if(cType == RemType.DEFAULT_TYPE || cType == RemType.PORTAL)
+                    continue;
+
                 const baseType = await getBaseType(plugin, c);
 
-                // 
+                // Property
                 if(baseType._id != remBaseType._id) {
                     // 'results' doesnt have a property with that base yet.
                     if(!await hasElementWithBase(plugin, results, c)) {
                         const baseTypeParentRem = await getEncapsulatingClass(plugin, baseType);
                         const propertyParentRem = await getEncapsulatingClass(plugin, c);
 
-                        results.push({  baseType: baseType,
+                        results.push({  fieldType: FieldType.Property,
+                                        baseType: baseType,
                                         baseTypeName: await getRemText(plugin, baseType),
                                         baseTypeParentRem: baseTypeParentRem,
                                         baseTypeParentRemName: await getRemText(plugin, baseTypeParentRem),
@@ -99,6 +114,27 @@ async function getProperties(plugin: RNPlugin, rem: Rem): Promise<PropertyLayer[
                         }
                     }
                 }
+                // Interface 
+                else {
+                    const baseTypeParentRem = await baseType.getParentRem() ?? baseType;
+                    const propertyParentRem = await c.getParentRem() ?? c;
+
+                    // default assume Subclass
+                    let fieldType: FieldType = FieldType.Subclass;
+
+                    if(cType == RemType.DESCRIPTOR)
+                        fieldType = FieldType.Interface
+
+                    results.push({  fieldType: fieldType,
+                                    baseType: baseType,
+                                    baseTypeName: await getRemText(plugin, baseType),
+                                    baseTypeParentRem: baseTypeParentRem,
+                                    baseTypeParentRemName: await getRemText(plugin, baseTypeParentRem),
+                                    property: c,
+                                    propertyName: await getRemText(plugin, c),
+                                    propertyParentRem: propertyParentRem,
+                                    propertyParentRemName: await getRemText(plugin, propertyParentRem)});
+                }
             }
         }
     }
@@ -111,7 +147,7 @@ function PropertiesWidget() {
 
     const [selectedRem, setSelectedRem] = useState<Rem | undefined>(undefined);
     const [selectedRemName, setSelectedRemName] = useState<string>("");
-    const [propertyList, setPropertyList] = useState<PropertyLayer[]>([]);
+    const [propertyList, setPropertyList] = useState<ClassField[]>([]);
 
     const [loading, setLoading] = useState<boolean>(false);
 
@@ -137,8 +173,8 @@ function PropertiesWidget() {
     const groupedProperties = useMemo(() => {
         const groups = propertyList.reduce(
             (
-            acc: Record<string, { parentRem: Rem; parentText: string; properties: PropertyLayer[] }>,
-            p: PropertyLayer
+            acc: Record<string, { parentRem: Rem; parentText: string; properties: ClassField[] }>,
+            p: ClassField
             ) => {
             const parentId = p.propertyParentRem._id;
             if (!acc[parentId]) {
@@ -151,7 +187,7 @@ function PropertiesWidget() {
             acc[parentId].properties.push(p);
             return acc;
             },
-            {} as Record<string, { parentRem: Rem; parentText: string; properties: PropertyLayer[] }>
+            {} as Record<string, { parentRem: Rem; parentText: string; properties: ClassField[] }>
         );
         return Object.values(groups);
     }, [propertyList]);
@@ -198,15 +234,18 @@ function PropertiesWidget() {
                     <MyRemNoteButton
                         key={p.property._id + "Open"}
                         text={""}
-                        img="M9 2.221V7H4.221a2 2 0 0 1 .365-.5L8.5 2.586A2 2 0 0 1 9 2.22ZM11 2v5a2 2 0 0 1-2 2H4v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2h-7Z"
+                        img="M4 4a2 2 0 0 0-2 2v12a2 2 0 0 0 .087.586l2.977-7.937A1 1 0 0 1 6 10h12V9a2 2 0 0 0-2-2h-4.532l-1.9-2.28A2 2 0 0 0 8.032 4H4Zm2.693 8H6.5l-3 8H18l3-8H6.693Z"
                         onClick={() => handleOpenRem(p.property)}
-                        title={p.propertyParentRemName}
+                        title={"Open"}
                     />
                     <MyRemNoteButton
                         key={p.property._id}
                         text={p.propertyName}
                         onClick={() => handleCopyClick(p.property)}
                         title={p.baseTypeName}
+                        img={p.fieldType == FieldType.Property  ? "M9 2.221V7H4.221a2 2 0 0 1 .365-.5L8.5 2.586A2 2 0 0 1 9 2.22ZM11 2v5a2 2 0 0 1-2 2H4v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2h-7Z"
+                                                                : p.fieldType == FieldType.Interface ? "M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+                                                                : "M3 9V6c0-.55228.44772-1 1-1h16c.5523 0 1 .44771 1 1v3M3 9v9c0 .5523.44772 1 1 1h16c.5523 0 1-.4477 1-1V9M3 9h18M8 9V5m4 4V5m4 4V5m-6 9h2m0 0h2m-2 0v-2m0 2v2"}
                     />
                 </div>))}
             </div>
