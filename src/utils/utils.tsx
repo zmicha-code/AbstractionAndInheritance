@@ -27,6 +27,199 @@ export const FOCUSED_NODE_STYLE = {
   border: "3px solid black", // Thick black border for the focused node
 };
 
+// --- Inheritance via "extends" descriptor helpers ---
+// Finds the child descriptor named exactly "extends" (case-insensitive)
+export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
+  try {
+    const children = await rem.getChildrenRem();
+    for (const child of children) {
+      try {
+        const [t, name] = await Promise.all([child.getType(), getRemText(plugin, child)]);
+        if (t === RemType.DESCRIPTOR && name.trim().toLowerCase() === "extends") {
+          return child;
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return undefined;
+}
+
+// Returns the parent Rems referenced under the "extends" descriptor child of `rem`.
+export async function getExtendsParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const ext = await getExtendsDescriptor(plugin, rem);
+  if (!ext) return [];
+  const resultMap = new Map<string, Rem>();
+  try {
+    const extChildren = await ext.getChildrenRem();
+    for (const c of extChildren) {
+      try {
+        const refs = await c.remsBeingReferenced();
+        for (const r of refs) {
+          if (!resultMap.has(r._id)) resultMap.set(r._id, r);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return Array.from(resultMap.values());
+}
+
+// Placeholder for upcoming implementation.
+// Returns a list of Rems considered "properties" of the given `rem`.
+// This function is intentionally minimal and will be implemented next.
+export async function getProperties(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  // 1) Gather all unique ancestors (excluding the rem itself) across all lineages
+  const lineages = await getAncestorLineage(plugin, rem);
+  const ancestorMap = new Map<string, Rem>();
+  for (const lineage of lineages) {
+    for (let i = 1; i < lineage.length; i++) {
+      const anc = lineage[i];
+      if (!ancestorMap.has(anc._id)) ancestorMap.set(anc._id, anc);
+    }
+  }
+
+  // 2) Collect candidate properties: children of ancestors that are documents
+  const candidateMap = new Map<string, Rem>();
+  for (const anc of ancestorMap.values()) {
+    const children = await getCleanChildren(plugin, anc);
+    const isDocs = await Promise.all(children.map((c) => c.isDocument()));
+    for (let i = 0; i < children.length; i++) {
+      const c = children[i];
+      if (isDocs[i]) {
+        candidateMap.set(c._id, c);
+      }
+    }
+  }
+
+  const candidates = Array.from(candidateMap.values());
+  if (candidates.length === 0) return [];
+
+  // 3) Remove any property that is extended via "extends" by another candidate property
+  const referencedTargets = new Set<string>();
+  await Promise.all(
+    candidates.map(async (p) => {
+      try {
+        const parents = await getExtendsParents(plugin, p);
+        for (const par of parents) {
+          if (candidateMap.has(par._id)) referencedTargets.add(par._id);
+        }
+      } catch {}
+    })
+  );
+
+  // 4) Final list: properties not referenced by other candidate properties
+  const finalList = candidates.filter((p) => !referencedTargets.has(p._id));
+
+  // 5) Exclude flashcards (only list properties with no cards)
+  try {
+    const okFlags = await Promise.all(
+      finalList.map(async (p) => {
+        try {
+          const cards = await p.getCards();
+          return (cards?.length ?? 0) === 0;
+        } catch (_) {
+          return true; // if API fails, don't over-filter
+        }
+      })
+    );
+    return finalList.filter((_, i) => okFlags[i]);
+  } catch (_) {
+    return finalList;
+  }
+}
+
+// Collects "interfaces": all non-document Rems reachable from non-document children
+// of each ancestor in the lineage of `rem` (excluding `rem` itself). Returns
+// a de-duplicated list of Rems.
+export async function getInterfaces(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const lineages = await getAncestorLineage(plugin, rem);
+  const ancestorMap = new Map<string, Rem>();
+  for (const lineage of lineages) {
+    for (let i = 1; i < lineage.length; i++) {
+      const anc = lineage[i];
+      if (!ancestorMap.has(anc._id)) ancestorMap.set(anc._id, anc);
+    }
+  }
+
+  const resultMap = new Map<string, Rem>();
+  const visited = new Set<string>();
+
+  for (const anc of ancestorMap.values()) {
+    const children = await getCleanChildren(plugin, anc);
+    // Build a single eligibility mask so indices remain aligned
+    const eligibility = await Promise.all(
+      children.map(async (c) => {
+        try {
+          const [isDoc, isSlot, type, cards] = await Promise.all([
+            c.isDocument(),
+            c.isSlot(),
+            c.getType(),
+            c.getCards(),
+          ]);
+          const hasCards = (cards?.length ?? 0) > 0;
+          return !isDoc && !isSlot && type !== RemType.DESCRIPTOR && !hasCards;
+        } catch (_) {
+          return false;
+        }
+      })
+    );
+    const nonDocChildren = children.filter((_, i) => eligibility[i]);
+
+    for (const start of nonDocChildren) {
+      // Traverse all non-document descendants (including start)
+      const stack: Rem[] = [start];
+      while (stack.length > 0) {
+        const node = stack.pop() as Rem;
+        if (visited.has(node._id)) continue;
+        visited.add(node._id);
+
+        try {
+          const [isDoc, isSlot, type, cards] = await Promise.all([
+            node.isDocument(),
+            node.isSlot(),
+            node.getType(),
+            node.getCards(),
+          ]);
+          const isDescriptor = type === RemType.DESCRIPTOR;
+          const hasCards = (cards?.length ?? 0) > 0;
+          // Ignore and do not traverse documents, slots, descriptors, or flashcards
+          if (isDoc || isSlot || isDescriptor || hasCards) {
+            continue;
+          }
+
+          // Include eligible node
+          resultMap.set(node._id, node);
+
+          // Traverse only eligible children
+          const kids = await getCleanChildren(plugin, node);
+          const kidEligibility = await Promise.all(
+            kids.map(async (k) => {
+              try {
+                const [kDoc, kSlot, kType, kCards] = await Promise.all([
+                  k.isDocument(),
+                  k.isSlot(),
+                  k.getType(),
+                  k.getCards(),
+                ]);
+                const kHasCards = (kCards?.length ?? 0) > 0;
+                return !kDoc && !kSlot && kType !== RemType.DESCRIPTOR && !kHasCards;
+              } catch (_) {
+                return false;
+              }
+            })
+          );
+          for (let i = 0; i < kids.length; i++) {
+            if (kidEligibility[i]) stack.push(kids[i]);
+          }
+        } catch (_) {
+          // ignore nodes that fail API calls
+        }
+      }
+    }
+  }
+
+  return Array.from(resultMap.values());
+}
+
 //
 /*
 export function getRemText(rem: Rem) {
@@ -606,10 +799,9 @@ export async function referencesEigenschaften(plugin: RNPlugin, rem: Rem): Promi
 }
 
 export async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<boolean> {
-  if(rem)
-    return (await rem.remsBeingReferenced()).length != 0;
-  
-  return false;
+  if (!rem) return false;
+  const parents = await getExtendsParents(plugin, rem);
+  return parents.length > 0;
 }
 
 export async function getNonReferencingParent(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
@@ -743,8 +935,30 @@ export async function isSameBaseType(
   return base1._id === base2._id;
 }
 
-// Returns the Class(es) (Rems) this Rem inherits from
 export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  if (!rem) return [];
+
+  const [isDocument, directParent, extendsParents] = await Promise.all([
+    rem.isDocument(),
+    rem.getParentRem(),
+    getExtendsParents(plugin, rem),
+  ]);
+
+  // Property (document): inherits via extends, otherwise defines a new type
+  if (isDocument) {
+    if (extendsParents.length > 0) return extendsParents;
+    return [rem];
+  }
+
+  // Interface (non-document): first the structural parent, then any extends parents
+  const result: Rem[] = [];
+  if (directParent) result.push(directParent);
+  for (const p of extendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
+  return result.length > 0 ? result : [rem];
+}
+
+// Returns the Class(es) (Rems) this Rem inherits from
+export async function getParentClass_(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   if (!rem) return [];
 
   const parent = await rem.getParentRem();
@@ -900,7 +1114,6 @@ export async function getAncestorLineageOld(plugin: RNPlugin, rem: Rem): Promise
 
   return [lineage];
 }
-
 
 export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Rem[][]> {
   const lineages = await findPaths(plugin, rem, [rem]);

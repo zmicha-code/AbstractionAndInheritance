@@ -1,0 +1,170 @@
+     4: import MyRemNoteButton from "../components/MyRemNoteButton";
+     5: 
+     6: // Simple XML escaper to keep output valid
+     7: const escapeXml = (str: string) =>
+     8:   str
+     9:     .replace(/&/g, "&amp;")
+    10:     .replace(/</g, "&lt;")
+    11:     .replace(/>/g, "&gt;")
+    12:     .replace(/"/g, "&quot;")
+    13:     .replace(/'/g, "&apos;");
+    14: 
+    15: // Build XML for a single Rem and its subtree (pretty-printed)
+    16: const indent = (level: number) => "\t".repeat(Math.max(0, level));
+    17: const generateRemXml = async (
+    18:   plugin: RNPlugin,
+    19:   rem: Rem,
+    20:   depth: number = 0,
+    21:   maxDepth?: number,
+    22:   excludeFlashcards?: boolean
+    24:   const name = await getRemText(plugin, rem);
+    25:   const safeName = escapeXml(name || "");
+    26:   const children = await getCleanChildren(plugin, rem);
+    27:   // Determine tag based on Rem properties
+    28:   let tagName = "Rem";
+    30:     const isAnswer = await ((rem as any).isCardItem?.() ?? Promise.resolve(false));
+    32:       tagName = "Answer";
+    34:       const cards = (await ((rem as any).getCards?.() ?? Promise.resolve([]))) as any[];
+    36:         tagName = "Flashcard";
+    38:         const isDoc = await ((rem as any).isDocument?.() ?? Promise.resolve(false));
+    39:         if (isDoc) tagName = "Property";
+    43:     // Fall back to default tag if any of the API calls fail
+    45: 
+    46:   // Optional inheritsFrom attribute for Rem and Property
+    47:   let inheritsAttr = "";
+    50:       const refs = await rem.remsBeingReferenced();
+    52:         const refName = await getRemText(plugin, refs[0]);
+    53:         const safeRef = escapeXml(refName || "");
+    58: 
+    59:   // Optionally skip Flashcard/Answer nodes entirely
+    61:     return "";
+    63: 
+    66: 
+    67:   // Depth limiting: stop adding children once maxDepth is reached
+    68:   const reachedDepthLimit = typeof maxDepth === 'number' && depth >= maxDepth;
+    69: 
+    71:     // Keep multiline for consistency, even without children
+    74: 
+    75:   const parts: string[] = [];
+    77:     const chunk = await generateRemXml(plugin, child, depth + 1, maxDepth, excludeFlashcards);
+    78:     if (chunk) parts.push(chunk);
+    80:   const inner = parts.join("\n");
+    83: 
+    84: // New function to generate the XML export string
+    86:   const body = await generateRemXml(plugin, rem, 0, maxDepth, excludeFlashcards);
+    89: 
+    91:     const plugin = usePlugin();
+    92: 
+    93:     const [selectedRem, setSelectedRem] = useState<Rem | undefined>(undefined);
+    94:     const [selectedRemName, setSelectedRemName] = useState<string>("");
+    95:     const [xmlExport, setXmlExport] = useState<string>("");
+    96:     const [maxDepth, setMaxDepth] = useState<number | undefined>(undefined);
+    97:     const [excludeFlashcards, setExcludeFlashcards] = useState<boolean>(false);
+    98: 
+    99:     const [loading, setLoading] = useState<boolean>(false);
+   100: 
+   101:     // Upper-half: Properties list state
+   102:     const [properties, setProperties] = useState<Rem[]>([]);
+   103:     const [propertyNames, setPropertyNames] = useState<string[]>([]);
+   104:     const [propertiesLoading, setPropertiesLoading] = useState<boolean>(false);
+   105: 
+   107:             return await reactPlugin.focus.getFocusedRem();
+   109:     );
+   110: 
+   111:     // Refresh properties whenever the focused Rem changes
+   113:       let cancelled = false;
+   117:             setProperties([]);
+   118:             setPropertyNames([]);
+   120:           return;
+   122:         setPropertiesLoading(true);
+   124:           const props = await getProperties(plugin, focusedRem);
+   125:           if (cancelled) return;
+   126:           setProperties(props);
+   127:           const names = await Promise.all(props.map((r) => getRemText(plugin, r)));
+   128:           if (cancelled) return;
+   129:           setPropertyNames(names);
+   131:           if (!cancelled) setPropertiesLoading(false);
+   134:       load();
+   136:         cancelled = true;
+   139: 
+   141:         if (!rem) return;
+   142:         setSelectedRem(rem);
+   143:         const name = await getRemText(plugin, rem);
+   144:         setSelectedRemName(name);
+   145: 
+   146:         // Set xmlExport using the new generateXml function
+   147:         setLoading(true);
+   148:         const xml = await generateXml(plugin, rem, maxDepth, excludeFlashcards);
+   149:         setXmlExport(xml);
+   150:         setLoading(false);
+   152: 
+   155:         await rem.copyReferenceToClipboard();
+   158: 
+   160:       if(rem)
+   161:         await plugin.window.openRem(rem);
+   163: 
+   164:     return (
+   165:       <div style={ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }>
+   167:         <div style={ flex: 1, overflowY: "auto", padding: 8 }>
+   168:           <div style={ fontWeight: "bold", marginBottom: 8 }>Properties</div>
+   170:             <div>Loading properties...</div>
+   171:           ) : properties.length === 0 ? (
+   172:             <div style={ color: "#888" }>No properties</div>
+   173:           ) : (
+   174:             <ul style={ listStyle: "none", padding: 0, margin: 0 }>
+   177:                   <span style={ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }>
+   179:                   </span>
+   180:                   <span style={ display: "flex", gap: 6 }>
+   183:                   </span>
+   184:                 </li>
+   186:             </ul>
+   188:         </div>
+   189: 
+   191:         <div style={ height: 1, background: "#ddd" } />
+   192: 
+   194:         <div style={ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }>
+   195:           <div style={ fontWeight: "bold", padding: 8, display: "flex", alignItems: "center", gap: 8 }>
+   197:             <select
+   198:               aria-label="Max Depth"
+   201:                 const v = e.target.value;
+   202:                 setMaxDepth(v === "" ? undefined : parseInt(v, 10));
+   203:               }
+   204:             >
+   205:               <option value="">Unlimited</option>
+   206:               <option value="1">1</option>
+   207:               <option value="2">2</option>
+   208:               <option value="3">3</option>
+   209:               <option value="4">4</option>
+   210:               <option value="5">5</option>
+   211:               <option value="6">6</option>
+   212:               <option value="7">7</option>
+   213:               <option value="8">8</option>
+   214:               <option value="9">9</option>
+   215:               <option value="10">10</option>
+   216:             </select>
+   217:             <label style={ display: "flex", alignItems: "center", gap: 4 }>
+   218:               <input
+   219:                 type="checkbox"
+   222:               />
+   223:               Exclude flashcards
+   224:             </label>
+   225:             <MyRemNoteButton
+   227:               text="Export"
+   228:               title=""
+   230:               img="M12 13V4M7 14H5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1h-2m-1-5-4 5-4-5m9 8h.01"
+   231:             />
+   232:           </div>
+   233:           <div style={ flex: 1, padding: 8, overflow: "hidden" }>
+   235:               <div>Loading...</div>
+   236:             ) : (
+   237:               <textarea
+   239:                 readOnly
+   240:                 placeholder="XML export will appear here after clicking Export"
+   241:                 style={ width: "100%", height: "100%", fontFamily: "monospace", whiteSpace: "pre" }
+   242:               />
+   244:           </div>
+   245:         </div>
+   246:       </div>
+   247:     );
+   249: 
+   250: renderWidget(PropertiesWidget);
