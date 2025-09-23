@@ -63,6 +63,60 @@ export async function getExtendsParents(plugin: RNPlugin, rem: Rem): Promise<Rem
   return Array.from(resultMap.values());
 }
 
+async function resolveExtendsOwner(
+  plugin: RNPlugin,
+  referencingRem: Rem
+): Promise<Rem | undefined> {
+  const visited = new Set<string>();
+  let current: Rem | undefined = referencingRem;
+
+  while (current) {
+    if (visited.has(current._id)) {
+      break;
+    }
+    visited.add(current._id);
+
+    const [type, parent] = await Promise.all<[RemType, Rem | null]>([
+      current.getType(),
+      current.getParentRem(),
+    ]);
+
+    if (type === RemType.DESCRIPTOR) {
+      const name = (await getRemText(plugin, current)).trim().toLowerCase();
+      if (name === "extends") {
+        return parent ?? undefined;
+      }
+    }
+
+    current = parent ?? undefined;
+  }
+
+  return undefined;
+}
+
+export async function getExtendsChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const referencingRems = await rem.remsReferencingThis();
+  const descendants = new Map<string, Rem>();
+
+  for (const ref of referencingRems) {
+    try {
+      const owner = await resolveExtendsOwner(plugin, ref);
+      if (!owner || owner._id === rem._id) {
+        continue;
+      }
+
+      const parents = await getExtendsParents(plugin, owner);
+      if (parents.some((p) => p._id === rem._id)) {
+        if (!descendants.has(owner._id)) {
+          descendants.set(owner._id, owner);
+        }
+      }
+    } catch (_) {}
+  }
+
+  return Array.from(descendants.values());
+}
+
 // Placeholder for upcoming implementation.
 // Returns a list of Rems considered "properties" of the given `rem`.
 // This function is intentionally minimal and will be implemented next.
@@ -1202,54 +1256,93 @@ export async function getCleanTags(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 export async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   const childrenRems = await rem.getChildrenRem();
   const cleanChildren: Rem[] = [];
+
   for (const childRem of childrenRems) {
-    const text = await getRemText(plugin, childRem);
+    const [text, type] = await Promise.all<[string, RemType]>([
+      getRemText(plugin, childRem),
+      childRem.getType(),
+    ]);
+    const normalized = text.trim().toLowerCase();
+
+    if (type === RemType.DESCRIPTOR && normalized === "extends") {
+      continue;
+    }
+
     if (
-      !specialNames.includes(text) && 
-      !specialNameParts.some(part => text.startsWith(part))
+      !specialNames.includes(text) &&
+      !specialNameParts.some((part) => text.startsWith(part))
     ) {
       cleanChildren.push(childRem);
     }
   }
+
   return cleanChildren;
 }
 
 export async function getCleanChildrenRef(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  const allRems = await rem.remsReferencingThis();
+  const referencingRems = await rem.remsReferencingThis();
+  const normalized: Rem[] = [];
 
-  // Remove duplicates based on Rem _id
+  for (const ref of referencingRems) {
+    const owner = await resolveExtendsOwner(plugin, ref);
+    if (owner && owner._id !== rem._id) {
+      normalized.push(owner);
+      continue;
+    }
+    normalized.push(ref);
+  }
+
   const uniqueRemsMap = new Map<string, Rem>();
-  for (const r of allRems) {
+  for (const r of normalized) {
     if (!uniqueRemsMap.has(r._id)) {
       uniqueRemsMap.set(r._id, r);
     }
   }
   const uniqueRems = Array.from(uniqueRemsMap.values());
 
-  // Fetch texts concurrently for efficiency
-  const texts = await Promise.all(uniqueRems.map(r => getRemText(plugin, r)));
+  const [texts, types] = await Promise.all([
+    Promise.all(uniqueRems.map((r) => getRemText(plugin, r))),
+    Promise.all(uniqueRems.map((r) => r.getType())),
+  ]);
 
-  // Apply the same filtering as getCleanChildren
   const cleanRems: Rem[] = [];
   for (let i = 0; i < uniqueRems.length; i++) {
     const text = texts[i];
+    const type = types[i];
+    const normalizedText = text.trim().toLowerCase();
+
     if (
-      !specialNames.includes(text) &&
-      !specialNameParts.some(part => text.startsWith(part))
+      specialNames.includes(text) ||
+      specialNameParts.some((part) => text.startsWith(part)) ||
+      (type === RemType.DESCRIPTOR && normalizedText === "extends")
     ) {
-      cleanRems.push(uniqueRems[i]);
+      continue;
     }
+
+    cleanRems.push(uniqueRems[i]);
   }
+
   return cleanRems;
 }
 
 export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  // Fetch direct children and referencing Rems
-  const childrenRems = await rem.getChildrenRem();
-  const referencingRems = await rem.remsReferencingThis();
-  const allRems = [...childrenRems, ...referencingRems];
+  const [childrenRems, referencingRems] = await Promise.all([
+    rem.getChildrenRem(),
+    rem.remsReferencingThis(),
+  ]);
 
-  // Remove duplicates based on Rem _id
+  const normalizedReferencing: Rem[] = [];
+  for (const ref of referencingRems) {
+    const owner = await resolveExtendsOwner(plugin, ref);
+    if (owner && owner._id !== rem._id) {
+      normalizedReferencing.push(owner);
+      continue;
+    }
+    normalizedReferencing.push(ref);
+  }
+
+  const allRems = [...childrenRems, ...normalizedReferencing];
+
   const uniqueRemsMap = new Map<string, Rem>();
   for (const r of allRems) {
     if (!uniqueRemsMap.has(r._id)) {
@@ -1258,20 +1351,28 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
   }
   const uniqueRems = Array.from(uniqueRemsMap.values());
 
-  // Fetch texts concurrently for efficiency
-  const texts = await Promise.all(uniqueRems.map(r => getRemText(plugin, r)));
+  const [texts, types] = await Promise.all([
+    Promise.all(uniqueRems.map((r) => getRemText(plugin, r))),
+    Promise.all(uniqueRems.map((r) => r.getType())),
+  ]);
 
-  // Apply the same filtering as getCleanChildren
   const cleanRems: Rem[] = [];
   for (let i = 0; i < uniqueRems.length; i++) {
     const text = texts[i];
+    const type = types[i];
+    const normalized = text.trim().toLowerCase();
+
     if (
-      !specialNames.includes(text) &&
-      !specialNameParts.some(part => text.startsWith(part))
+      specialNames.includes(text) ||
+      specialNameParts.some((part) => text.startsWith(part)) ||
+      (type === RemType.DESCRIPTOR && normalized === "extends")
     ) {
-      cleanRems.push(uniqueRems[i]);
+      continue;
     }
+
+    cleanRems.push(uniqueRems[i]);
   }
+
   return cleanRems;
 }
 
@@ -2353,3 +2454,7 @@ export async function getLayers2(plugin: RNPlugin, rem: Rem, interfaceLayers = t
 
   return result;
 }
+
+
+
+
