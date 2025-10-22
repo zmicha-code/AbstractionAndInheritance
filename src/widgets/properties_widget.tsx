@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RemType, Queue } from "@remnote/plugin-sdk";
-import { getAncestorLineage, getBaseType, getRemText, getEncapsulatingClass, getCleanChildren, getCleanChildrenAll, getProperties, getInterfaces, getExtendsParents } from "../utils/utils";
+import { getAncestorLineage, getBaseType, getRemText, getEncapsulatingClass, getCleanChildren, getCleanChildrenAll, getProperties, getInterfaceDescendants, getExtendsParents } from "../utils/utils";
 import MyRemNoteButton from "../components/MyRemNoteButton";
 
 // Simple XML escaper to keep output valid
@@ -116,7 +116,7 @@ function PropertiesWidget() {
     );
 
     // Manual refresh: build property groups on demand
-    const refreshProperties = async () => {
+    const refreshProperties = useCallback(async () => {
       if (!focusedRem) return;
       setShowExport(false);
       setPropertiesLoading(true);
@@ -187,10 +187,10 @@ function PropertiesWidget() {
       } finally {
         setPropertiesLoading(false);
       }
-    };
+    }, [focusedRem, plugin]);
 
     // Manual refresh: load interfaces only
-    const refreshInterfaces = async () => {
+    const refreshInterfaces = useCallback(async () => {
       if (!focusedRem) return;
       setShowExport(false);
       setPropertiesLoading(true);
@@ -198,28 +198,21 @@ function PropertiesWidget() {
         const forName = await getRemText(plugin, focusedRem);
         setPropertiesForRemName(forName);
 
-        const interfaces = await getInterfaces(plugin, focusedRem);
+        const interfaceEntries = await getInterfaceDescendants(plugin, focusedRem);
 
-        // Compute depth map once
-        const lineages = await getAncestorLineage(plugin, focusedRem);
-        const depthMap = new Map<string, number>();
-        for (const lineage of lineages) {
-          for (let i = 1; i < lineage.length; i++) {
-            const anc = lineage[i];
-            const prev = depthMap.get(anc._id) ?? -1;
-            if (i > prev) depthMap.set(anc._id, i);
+        const depthByRem = new Map<string, number>();
+        for (const entry of interfaceEntries) {
+          const { rem: candidate, depth, root } = entry;
+          if (!depthByRem.has(root._id) || depthByRem.get(root._id)! > 0) {
+            depthByRem.set(root._id, 0);
+          }
+          const currentDepth = depthByRem.get(candidate._id);
+          if (currentDepth === undefined || depth < currentDepth) {
+            depthByRem.set(candidate._id, depth);
           }
         }
 
         // Helpers
-        const findClassFor = async (r: Rem): Promise<Rem | undefined> => {
-          let cur: Rem | undefined | null = r;
-          while (cur) {
-            if (await cur.isDocument()) return cur;
-            cur = await cur.getParentRem();
-          }
-          return undefined;
-        };
         const isInterfaceNode = async (r: Rem): Promise<boolean> => {
           const [isDoc, isSlot, type, cards] = await Promise.all([
             r.isDocument(),
@@ -240,10 +233,10 @@ function PropertiesWidget() {
         };
 
         const ifaceGroupMap = new Map<string, InterfaceGroup>();
-        for (const it of interfaces) {
+        for (const entry of interfaceEntries) {
+          const it = entry.rem;
           const parentIface = (await findParentInterface(it)) ?? it; // group by nearest parent interface, or itself
-          const docForDepth = await findClassFor(parentIface);
-          const depth = docForDepth ? (depthMap.get(docForDepth._id) ?? 0) : 0;
+          const depth = depthByRem.get(parentIface._id) ?? entry.depth;
           const key = parentIface._id;
           if (!ifaceGroupMap.has(key)) {
             const className = await getRemText(plugin, parentIface);
@@ -258,6 +251,25 @@ function PropertiesWidget() {
       } finally {
         setPropertiesLoading(false);
       }
+    }, [focusedRem, plugin]);
+
+    const lastFocusedIdRef = useRef<string | undefined>();
+
+    useEffect(() => {
+      const currentId = focusedRem?._id;
+      if (!currentId) {
+        lastFocusedIdRef.current = undefined;
+        return;
+      }
+      if (lastFocusedIdRef.current === currentId) {
+        return;
+      }
+      lastFocusedIdRef.current = currentId;
+      //void refreshProperties();
+    }, [focusedRem, refreshProperties]);
+
+    const handleLoadMindMap = async (rem: Rem | undefined) => {
+        await plugin.window.openWidgetInPane('mindmap_widget');
     };
 
     const handleExportClick = async (rem: Rem | undefined) => {
@@ -303,6 +315,13 @@ function PropertiesWidget() {
               text="Load Interfaces"
               title="Load interfaces for focused Rem"
               onClick={refreshInterfaces}
+              img="M4 4v6h6M20 20v-6h-6M20 14a6 6 0 0 0-6 6M4 10a6 6 0 0 1 6-6"
+            />
+            <MyRemNoteButton
+              key={"LoadMindMap"}
+              text="Load MindMap"
+              title=""
+              onClick={handleLoadMindMap}
               img="M4 4v6h6M20 20v-6h-6M20 14a6 6 0 0 0-6 6M4 10a6 6 0 0 1 6-6"
             />
             {/* Export controls */}

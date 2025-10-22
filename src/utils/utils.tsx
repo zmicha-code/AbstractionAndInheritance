@@ -117,9 +117,7 @@ export async function getExtendsChildren(plugin: RNPlugin, rem: Rem): Promise<Re
   return Array.from(descendants.values());
 }
 
-// Placeholder for upcoming implementation.
 // Returns a list of Rems considered "properties" of the given `rem`.
-// This function is intentionally minimal and will be implemented next.
 export async function getProperties(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
   // 1) Gather all unique ancestors (excluding the rem itself) across all lineages
   const lineages = await getAncestorLineage(plugin, rem);
@@ -181,97 +179,98 @@ export async function getProperties(plugin: RNPlugin, rem: Rem): Promise<Rem[]> 
   }
 }
 
-// Collects "interfaces": all non-document Rems reachable from non-document children
-// of each ancestor in the lineage of `rem` (excluding `rem` itself). Returns
-// a de-duplicated list of Rems.
-export async function getInterfaces(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  const lineages = await getAncestorLineage(plugin, rem);
-  const ancestorMap = new Map<string, Rem>();
-  for (const lineage of lineages) {
-    for (let i = 1; i < lineage.length; i++) {
-      const anc = lineage[i];
-      if (!ancestorMap.has(anc._id)) ancestorMap.set(anc._id, anc);
+// Details about an interface candidate found while traversing extends targets.
+export type InterfaceDescendant = {
+  rem: Rem;
+  depth: number; // distance from the extends parent (direct child => 1)
+  root: Rem; // the extends parent that owns this descendant
+};
+
+// Collects interface candidates exclusively from descendants of the "extends" parents.
+export async function getInterfaceDescendants(
+  plugin: RNPlugin,
+  rem: Rem
+): Promise<InterfaceDescendant[]> {
+  const extendsParents = await getExtendsParents(plugin, rem);
+  if (extendsParents.length === 0) return [];
+
+  const results = new Map<string, InterfaceDescendant>();
+  const bestDepth = new Map<string, number>();
+  const stack: Array<{ rem: Rem; depth: number; root: Rem }> = [];
+
+  const isEligibleInterfaceNode = async (node: Rem): Promise<boolean> => {
+    try {
+      const [isDoc, isSlot, type, cards] = await Promise.all([
+        node.isDocument(),
+        node.isSlot(),
+        node.getType(),
+        node.getCards(),
+      ]);
+      const hasCards = (cards?.length ?? 0) > 0;
+      return !isDoc && !isSlot && type !== RemType.DESCRIPTOR && !hasCards;
+    } catch (_) {
+      return false;
     }
-  }
+  };
 
-  const resultMap = new Map<string, Rem>();
-  const visited = new Set<string>();
-
-  for (const anc of ancestorMap.values()) {
-    const children = await getCleanChildren(plugin, anc);
-    // Build a single eligibility mask so indices remain aligned
-    const eligibility = await Promise.all(
-      children.map(async (c) => {
-        try {
-          const [isDoc, isSlot, type, cards] = await Promise.all([
-            c.isDocument(),
-            c.isSlot(),
-            c.getType(),
-            c.getCards(),
-          ]);
-          const hasCards = (cards?.length ?? 0) > 0;
-          return !isDoc && !isSlot && type !== RemType.DESCRIPTOR && !hasCards;
-        } catch (_) {
-          return false;
-        }
-      })
-    );
-    const nonDocChildren = children.filter((_, i) => eligibility[i]);
-
-    for (const start of nonDocChildren) {
-      // Traverse all non-document descendants (including start)
-      const stack: Rem[] = [start];
-      while (stack.length > 0) {
-        const node = stack.pop() as Rem;
-        if (visited.has(node._id)) continue;
-        visited.add(node._id);
-
-        try {
-          const [isDoc, isSlot, type, cards] = await Promise.all([
-            node.isDocument(),
-            node.isSlot(),
-            node.getType(),
-            node.getCards(),
-          ]);
-          const isDescriptor = type === RemType.DESCRIPTOR;
-          const hasCards = (cards?.length ?? 0) > 0;
-          // Ignore and do not traverse documents, slots, descriptors, or flashcards
-          if (isDoc || isSlot || isDescriptor || hasCards) {
-            continue;
-          }
-
-          // Include eligible node
-          resultMap.set(node._id, node);
-
-          // Traverse only eligible children
-          const kids = await getCleanChildren(plugin, node);
-          const kidEligibility = await Promise.all(
-            kids.map(async (k) => {
-              try {
-                const [kDoc, kSlot, kType, kCards] = await Promise.all([
-                  k.isDocument(),
-                  k.isSlot(),
-                  k.getType(),
-                  k.getCards(),
-                ]);
-                const kHasCards = (kCards?.length ?? 0) > 0;
-                return !kDoc && !kSlot && kType !== RemType.DESCRIPTOR && !kHasCards;
-              } catch (_) {
-                return false;
-              }
-            })
-          );
-          for (let i = 0; i < kids.length; i++) {
-            if (kidEligibility[i]) stack.push(kids[i]);
-          }
-        } catch (_) {
-          // ignore nodes that fail API calls
-        }
+  const enqueueEligibleChildren = async (
+    parent: Rem,
+    depth: number,
+    root: Rem
+  ) => {
+    try {
+      const children = await getCleanChildren(plugin, parent);
+      const eligibility = await Promise.all(children.map(isEligibleInterfaceNode));
+      for (let i = 0; i < children.length; i++) {
+        if (!eligibility[i]) continue;
+        const child = children[i];
+        const nextDepth = depth + 1;
+        const prev = bestDepth.get(child._id);
+        if (prev !== undefined && prev <= nextDepth) continue;
+        bestDepth.set(child._id, nextDepth);
+        stack.push({ rem: child, depth: nextDepth, root });
       }
+    } catch (_) {
+      // Skip branches we cannot load
     }
+  };
+
+  for (const root of extendsParents) {
+    bestDepth.set(root._id, 0);
+    await enqueueEligibleChildren(root, 0, root);
   }
 
-  return Array.from(resultMap.values());
+  while (stack.length > 0) {
+    const { rem: node, depth, root } = stack.pop() as {
+      rem: Rem;
+      depth: number;
+      root: Rem;
+    };
+
+    const recordedDepth = bestDepth.get(node._id);
+    if (recordedDepth !== undefined && depth > recordedDepth) {
+      continue;
+    }
+
+    if (!(await isEligibleInterfaceNode(node))) {
+      continue;
+    }
+
+    const existing = results.get(node._id);
+    if (!existing || depth < existing.depth) {
+      results.set(node._id, { rem: node, depth, root });
+    }
+
+    await enqueueEligibleChildren(node, depth, root);
+  }
+
+  return Array.from(results.values());
+}
+
+// Convenience wrapper that keeps the original Rem[] return shape.
+export async function getInterfaces(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const descendants = await getInterfaceDescendants(plugin, rem);
+  return descendants.map((entry) => entry.rem);
 }
 
 //

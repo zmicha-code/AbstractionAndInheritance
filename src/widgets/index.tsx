@@ -233,11 +233,11 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register a sidebar widget.
-  await plugin.app.registerWidget('sample_widget', WidgetLocation.RightSidebar, {
+  await plugin.app.registerWidget('mindmap_widget', WidgetLocation.Pane, {
     dimensions: { height: 'auto', width: '100%' },
   });
 
-  //await plugin.window.openWidgetInPane('sample_widget');
+  await plugin.window.openWidgetInPane('mindmap_widget');
 
   // Register a sidebar widget.
   //await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
