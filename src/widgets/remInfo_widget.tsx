@@ -1,4 +1,4 @@
-import { usePlugin, renderWidget, useTracker, Rem, RNPlugin, RemType } from '@remnote/plugin-sdk';
+import { usePlugin, renderWidget, useTrackerPlugin, PluginRem, RNPlugin, RemType } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 import { RemViewer } from '@remnote/plugin-sdk';
 import { specialTags, getRemText, isReferencingRem, getParentClass, getAncestorLineageStrings, getClassProperties, getClassDescriptors } from '../utils/utils';
@@ -6,7 +6,7 @@ import { specialTags, getRemText, isReferencingRem, getParentClass, getAncestorL
 // Assuming Rem is a type defined elsewhere, e.g., imported from a library
 interface ListComponentProps {
     title: string;
-    rems: Rem[];
+    rems: PluginRem[];
 }
 
 const ListComponent = ({ title, rems }: ListComponentProps) => {
@@ -14,7 +14,7 @@ const ListComponent = ({ title, rems }: ListComponentProps) => {
         <div className="mb-4">
         <h3 className="text-lg font-bold">{title}</h3>
         <ul className="list-disc pl-5">
-            {rems.map((rem: Rem) => (
+            {rems.map((rem: PluginRem) => (
             <li key={rem._id}>
                 <RemViewer remId={rem._id} />
             </li>
@@ -27,22 +27,22 @@ const ListComponent = ({ title, rems }: ListComponentProps) => {
 export function RemInfoWidget() {
     const plugin = usePlugin();
 
-    const focusedRem = useTracker(async (reactPlugin) => {
+    const focusedRem = useTrackerPlugin(async (reactPlugin) => {
             return await reactPlugin.focus.getFocusedRem();
         }
     );
 
     // State variables for Rem data
-    const [properties, setProperties] = useState<Rem[]>([]);
-    const [descriptors, setDescriptors] = useState<Rem[]>([]);
-    const [tags, setTags] = useState<Rem[]>([]);
-    const [taggedRems, setTaggedRems] = useState<Rem[]>([]);
-    const [ancestorTags, setAncestorTags] = useState<Rem[]>([]);
-    const [descendantTags, setDescendantTags] = useState<Rem[]>([]);
-    const [referencingRems, setReferencingRems] = useState<Rem[]>([]);
-    const [referencedRems, setReferencedRems] = useState<Rem[]>([]);
-    const [deepReferencedRems, setDeepReferencedRems] = useState<Rem[]>([]);
-    const [classType, setClassType] = useState<Rem[]>([]);
+    const [properties, setProperties] = useState<PluginRem[]>([]);
+    const [descriptors, setDescriptors] = useState<PluginRem[]>([]);
+    const [tags, setTags] = useState<PluginRem[]>([]);
+    const [taggedRems, setTaggedRems] = useState<PluginRem[]>([]);
+    const [ancestorTags, setAncestorTags] = useState<PluginRem[]>([]);
+    const [descendantTags, setDescendantTags] = useState<PluginRem[]>([]);
+    const [referencingRems, setReferencingRems] = useState<PluginRem[]>([]);
+    const [referencedRems, setReferencedRems] = useState<PluginRem[]>([]);
+    const [deepReferencedRems, setDeepReferencedRems] = useState<PluginRem[]>([]);
+    const [classType, setClassType] = useState<PluginRem[]>([]);
     const [lineage, setLineage] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
 

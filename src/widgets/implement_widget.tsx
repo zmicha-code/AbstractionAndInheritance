@@ -1,4 +1,4 @@
-import { usePlugin, renderWidget, useTracker, Rem, RemType, SetRemType,
+import { usePlugin, renderWidget, useTrackerPlugin, Rem, RemType, SetRemType,
     RichTextElementRemInterface, RichTextInterface, RNPlugin } from '@remnote/plugin-sdk';
 import { useEffect, useMemo, useState } from 'react';
 import { layerItem, getRemText, isRemAncestor,getBaseType, isConcept, isDescriptor, isReferencingRem, getParentClass, getAncestorLineage, isSameBaseType, getClassDescriptors, getClassProperties, getCleanChildren, getAncestorLineageStrings, getLayers, getInheritedData, printLayerItem, getLayers2} from '../utils/utils';
@@ -1050,7 +1050,7 @@ export function ImplementWidget() {
   const [searchQuery, setSearchQuery] = useState("");
   const [appliedSearchQuery, setAppliedSearchQuery] = useState("");
 
-  const focusedRem = useTracker(async (reactPlugin) => {
+  const focusedRem = useTrackerPlugin(async (reactPlugin) => {
     return await reactPlugin.focus.getFocusedRem();
   });
 

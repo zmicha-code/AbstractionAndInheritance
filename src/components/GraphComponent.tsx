@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ReactFlow, Node, Edge, useReactFlow, NodeTypes, OnNodesChange, OnEdgesChange } from "@xyflow/react";
-import { renderWidget, useTracker, Rem, usePlugin } from "@remnote/plugin-sdk";
+import { renderWidget, useTrackerPlugin, Rem, usePlugin } from "@remnote/plugin-sdk";
 import { NodeData } from "../components/Nodes";
 
 // Define the props interface

@@ -1,4 +1,4 @@
-import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RichTextInterface, RemType, REM_TYPE } from "@remnote/plugin-sdk";
+import { renderWidget, useTrackerPlugin, Rem, usePlugin, RNPlugin, RichTextInterface, RemType, REM_TYPE } from "@remnote/plugin-sdk";
 
 import { NodeData } from "../components/Nodes";
 import { layout } from "dagre";

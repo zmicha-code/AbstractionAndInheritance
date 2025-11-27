@@ -15,14 +15,14 @@ import {
   NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { renderWidget, usePlugin, useTracker, Rem, RNPlugin, RemType } from "@remnote/plugin-sdk";
+import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType } from "@remnote/plugin-sdk";
 
 import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents } from "../utils/utils";
 
 type HierarchyNode = {
   id: string;
   name: string;
-  remRef: Rem;
+  remRef: PluginRem;
   children: HierarchyNode[];
 };
 
@@ -312,11 +312,11 @@ const NODE_TYPES = {
 
 async function buildAncestorNodes(
   plugin: RNPlugin,
-  rem: Rem,
+  rem: PluginRem,
   visited: Set<string>
 ): Promise<HierarchyNode[]> {
   const parents = await getParentClass(plugin, rem);
-  const uniqueParents = new Map<string, Rem>();
+  const uniqueParents = new Map<string, PluginRem>();
   for (const parent of parents) {
     if (!parent || parent._id === rem._id || visited.has(parent._id)) continue;
     uniqueParents.set(parent._id, parent);
@@ -340,7 +340,7 @@ async function buildAncestorNodes(
   return result;
 }
 
-async function getStructuralDescendantChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+async function getStructuralDescendantChildren(plugin: RNPlugin, rem: PluginRem): Promise<PluginRem[]> {
   const children = await getCleanChildren(plugin, rem);
   const meta = await Promise.all(
     children.map(async (child) => {
@@ -355,7 +355,7 @@ async function getStructuralDescendantChildren(plugin: RNPlugin, rem: Rem): Prom
 
 async function buildDescendantNodes(
   plugin: RNPlugin,
-  rem: Rem,
+  rem: PluginRem,
   visited: Set<string>
 ): Promise<HierarchyNode[]> {
   const [extendsChildren, structuralChildren] = await Promise.all([
@@ -363,7 +363,7 @@ async function buildDescendantNodes(
     getStructuralDescendantChildren(plugin, rem),
   ]);
 
-  const childMap = new Map<string, Rem>();
+  const childMap = new Map<string, PluginRem>();
   for (const child of extendsChildren) {
     if (!child || child._id === rem._id || visited.has(child._id)) continue;
     childMap.set(child._id, child);
@@ -1021,11 +1021,11 @@ const buildDescendantOwnerMap = (descendants: HierarchyNode[]): Record<string, s
 };
 
 function collectRemsForProperties(
-  center: Rem,
+  center: PluginRem,
   ancestors: HierarchyNode[],
   descendants: HierarchyNode[]
-): Rem[] {
-  const remMap = new Map<string, Rem>();
+): PluginRem[] {
+  const remMap = new Map<string, PluginRem>();
   if (center) {
     remMap.set(center._id, center);
   }
@@ -1042,16 +1042,16 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
-async function buildAttributeData(plugin: RNPlugin, rems: Rem[], topLevelIsDocument: boolean, skipTopLevelForId?: string): Promise<AttributeData> {
+async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
   const extendsTargets = new Set<string>();
 
-  async function collectAttributes(owner: Rem, ownerNodeId: string, isSubAttribute: boolean = false): Promise<AttributeNodeInfo[]> {
+  async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false): Promise<AttributeNodeInfo[]> {
     if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
       return [];
     }
-    let childrenRems: Rem[];
+    let childrenRems: PluginRem[];
     if (!isSubAttribute) {
       const children = await getCleanChildren(plugin, owner);
       if (topLevelIsDocument) {
@@ -1103,7 +1103,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: Rem[], topLevelIsDocum
 function MindmapWidget() {
   const plugin = usePlugin();
 
-  const focusedRem = useTracker(async (reactPlugin) => {
+  const focusedRem = useTrackerPlugin(async (reactPlugin) => {
     return await reactPlugin.focus.getFocusedRem();
   });
 
@@ -1746,7 +1746,7 @@ function MindmapWidget() {
 
   const handleOpenContextRem = useCallback(async () => {
     if (!contextMenu?.remId) return;
-    const rem = (await plugin.rem.findOne(contextMenu.remId)) as Rem | null;
+    const rem = (await plugin.rem.findOne(contextMenu.remId)) as PluginRem | null;
     if (rem) {
       void plugin.window.openRem(rem);
     }
@@ -1755,7 +1755,7 @@ function MindmapWidget() {
 
   const handleCopyContextRem = useCallback(async () => {
     if (!contextMenu?.remId) return;
-    const rem = (await plugin.rem.findOne(contextMenu.remId)) as Rem | null;
+    const rem = (await plugin.rem.findOne(contextMenu.remId)) as PluginRem | null;
     if (rem) {
       await rem.copyReferenceToClipboard();
     }

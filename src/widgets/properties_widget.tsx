@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { renderWidget, useTracker, Rem, usePlugin, RNPlugin, RemType, Queue } from "@remnote/plugin-sdk";
+import { renderWidget, useTrackerPlugin, PluginRem, usePlugin, RNPlugin, RemType, Queue } from "@remnote/plugin-sdk";
 import { getAncestorLineage, getBaseType, getRemText, getEncapsulatingClass, getCleanChildren, getCleanChildrenAll, getProperties, getInterfaceDescendants, getExtendsParents } from "../utils/utils";
 import MyRemNoteButton from "../components/MyRemNoteButton";
 
@@ -16,7 +16,7 @@ const escapeXml = (str: string) =>
 const indent = (level: number) => "\t".repeat(Math.max(0, level));
 const generateRemXml = async (
   plugin: RNPlugin,
-  rem: Rem,
+  rem: PluginRem,
   depth: number = 0,
   maxDepth?: number,
   excludeFlashcards?: boolean
@@ -82,7 +82,7 @@ const generateRemXml = async (
 };
 
 // New function to generate the XML export string
-const generateXml = async (plugin: RNPlugin, rem: Rem, maxDepth?: number, excludeFlashcards?: boolean): Promise<string> => {
+const generateXml = async (plugin: RNPlugin, rem: PluginRem, maxDepth?: number, excludeFlashcards?: boolean): Promise<string> => {
   const body = await generateRemXml(plugin, rem, 0, maxDepth, excludeFlashcards);
   return `${body}`;
 };
@@ -90,7 +90,7 @@ const generateXml = async (plugin: RNPlugin, rem: Rem, maxDepth?: number, exclud
 function PropertiesWidget() {
     const plugin = usePlugin();
 
-    const [selectedRem, setSelectedRem] = useState<Rem | undefined>(undefined);
+    const [selectedRem, setSelectedRem] = useState<PluginRem | undefined>(undefined);
     const [selectedRemName, setSelectedRemName] = useState<string>("");
     const [xmlExport, setXmlExport] = useState<string>("");
     const [maxDepth, setMaxDepth] = useState<number | undefined>(undefined);
@@ -99,10 +99,10 @@ function PropertiesWidget() {
     const [loading, setLoading] = useState<boolean>(false);
 
     // Upper-half: Grouped properties state
-    type PropertyItem = { rem: Rem; name: string; icon: string };
-    type PropertyGroup = { classRem: Rem; className: string; depth: number; items: PropertyItem[] };
-    type InterfaceItem = { rem: Rem; name: string };
-    type InterfaceGroup = { classRem: Rem; className: string; depth: number; items: InterfaceItem[] };
+    type PropertyItem = { rem: PluginRem; name: string; icon: string };
+    type PropertyGroup = { classRem: PluginRem; className: string; depth: number; items: PropertyItem[] };
+    type InterfaceItem = { rem: PluginRem; name: string };
+    type InterfaceGroup = { classRem: PluginRem; className: string; depth: number; items: InterfaceItem[] };
     const [propertyGroups, setPropertyGroups] = useState<PropertyGroup[]>([]);
     const [interfaceGroups, setInterfaceGroups] = useState<InterfaceGroup[]>([]);
     const [propertiesLoading, setPropertiesLoading] = useState<boolean>(false);
@@ -110,9 +110,9 @@ function PropertiesWidget() {
     const [activeList, setActiveList] = useState<"properties" | "interfaces" | null>(null);
     const [showExport, setShowExport] = useState<boolean>(false);
 
-    const focusedRem = useTracker(async (reactPlugin) => {
-            return await reactPlugin.focus.getFocusedRem();
-        }
+    const focusedRem = useTrackerPlugin(async (reactPlugin) => {
+        return await reactPlugin.focus.getFocusedRem();
+      }
     );
 
     // Manual refresh: build property groups on demand
@@ -249,11 +249,11 @@ function PropertiesWidget() {
       //void refreshProperties();
     }, [focusedRem, refreshProperties]);
 
-    const handleLoadMindMap = async (rem: Rem | undefined) => {
+    const handleLoadMindMap = async (rem: PluginRem | undefined) => {
         await plugin.window.openWidgetInPane('mindmap_widget');
     };
 
-    const handleExportClick = async (rem: Rem | undefined) => {
+    const handleExportClick = async (rem: PluginRem | undefined) => {
         if (!rem) return;
         setShowExport(true);
         setActiveList(null);
@@ -268,13 +268,13 @@ function PropertiesWidget() {
         setLoading(false);
     };
 
-    const handleCopyClick = async (rem: Rem) => {
+    const handleCopyClick = async (rem: PluginRem) => {
         if (rem) {
         await rem.copyReferenceToClipboard();
         }
     };
 
-    const handleOpenRem = async (rem: Rem) => {
+    const handleOpenRem = async (rem: PluginRem) => {
       if(rem)
         await plugin.window.openRem(rem);
     };

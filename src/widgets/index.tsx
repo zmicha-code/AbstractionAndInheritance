@@ -1,5 +1,5 @@
 import { declareIndexPlugin, ReactRNPlugin, WidgetLocation,
-  Rem, RemType, SetRemType,
+  PluginRem, RemType, SetRemType,
   RichTextElementRemInterface, RichTextInterface, 
   RNPlugin,
   RICH_TEXT_FORMATTING} from '@remnote/plugin-sdk';
@@ -21,7 +21,7 @@ import '../style.css';
 import '../App.css';
 
 // Function to set a Rem to reference another Rem
-async function setRemToReference(plugin: ReactRNPlugin, newReference: Rem, oldReference: Rem, referencingRem: Rem) {
+async function setRemToReference(plugin: ReactRNPlugin, newReference: PluginRem, oldReference: PluginRem, referencingRem: PluginRem) {
   const remText = referencingRem.text;
   const updatedText = remText.map(element => {
       if (typeof element === 'object') {
@@ -112,7 +112,7 @@ async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
   await plugin.app.toast(`Updated ${referencingRems.length} Rems to reference the target Rem.`);
 }
 
-async function isAncestor2(plugin: RNPlugin, ancestor: Rem, rem: Rem): Promise<boolean> {
+async function isAncestor2(plugin: RNPlugin, ancestor: PluginRem, rem: PluginRem): Promise<boolean> {
 
   const lineages = (await getAncestorLineage(plugin, rem)); // const ancestors = (await getAncestorLineage(plugin, rem))[0];
 
