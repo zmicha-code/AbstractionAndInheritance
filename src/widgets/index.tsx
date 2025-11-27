@@ -233,11 +233,12 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register a sidebar widget.
-  await plugin.app.registerWidget('mindmap_widget', WidgetLocation.Pane, {
+  await plugin.app.registerWidget('mindmap_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
   });
 
-  await plugin.window.openWidgetInPane('mindmap_widget');
+  // WidgetLocation.Pane causes RemNote error
+  //await plugin.window.openWidgetInPane('mindmap_widget');
 
   // Register a sidebar widget.
   //await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
@@ -265,7 +266,6 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
 
   // Register the "extrudeLayer" command
-
   await plugin.app.registerCommand({
     id: 'extrude-command',
     name: 'Extrude Layer',

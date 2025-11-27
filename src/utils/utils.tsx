@@ -114,7 +114,17 @@ export async function getExtendsChildren(plugin: RNPlugin, rem: Rem): Promise<Re
     } catch (_) {}
   }
 
-  return Array.from(descendants.values());
+  // return Array.from(descendants.values());
+  const children = Array.from(descendants.values());
+  const meta = await Promise.all(
+    children.map(async (child) => {
+      const [type] = await Promise.all([child.getType()]);
+      return { child, type };
+    })
+  );
+  return meta
+    .filter(({ type }) => type !== RemType.DESCRIPTOR)
+    .map(({ child }) => child);
 }
 
 // Returns a list of Rems considered "properties" of the given `rem`.

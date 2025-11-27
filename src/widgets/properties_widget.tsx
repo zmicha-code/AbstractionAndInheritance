@@ -200,47 +200,28 @@ function PropertiesWidget() {
 
         const interfaceEntries = await getInterfaceDescendants(plugin, focusedRem);
 
-        const depthByRem = new Map<string, number>();
-        for (const entry of interfaceEntries) {
-          const { rem: candidate, depth, root } = entry;
-          if (!depthByRem.has(root._id) || depthByRem.get(root._id)! > 0) {
-            depthByRem.set(root._id, 0);
-          }
-          const currentDepth = depthByRem.get(candidate._id);
-          if (currentDepth === undefined || depth < currentDepth) {
-            depthByRem.set(candidate._id, depth);
+        // Compute ancestor order (depth) across all lineages
+        const lineages = await getAncestorLineage(plugin, focusedRem);
+        const depthMap = new Map<string, number>();
+        for (const lineage of lineages) {
+          for (let i = 1; i < lineage.length; i++) {
+            const anc = lineage[i];
+            const prev = depthMap.get(anc._id) ?? -1;
+            if (i > prev) depthMap.set(anc._id, i);
           }
         }
 
-        // Helpers
-        const isInterfaceNode = async (r: Rem): Promise<boolean> => {
-          const [isDoc, isSlot, type, cards] = await Promise.all([
-            r.isDocument(),
-            r.isSlot(),
-            r.getType(),
-            r.getCards(),
-          ]);
-          const hasCards = (cards?.length ?? 0) > 0;
-          return !isDoc && !isSlot && type !== RemType.DESCRIPTOR && !hasCards;
-        };
-        const findParentInterface = async (r: Rem): Promise<Rem | undefined> => {
-          let cur: Rem | null | undefined = await r.getParentRem();
-          while (cur) {
-            if (await isInterfaceNode(cur)) return cur;
-            cur = await cur.getParentRem();
-          }
-          return undefined;
-        };
-
+        // Group by defining class (parent of interface rem)
         const ifaceGroupMap = new Map<string, InterfaceGroup>();
         for (const entry of interfaceEntries) {
           const it = entry.rem;
-          const parentIface = (await findParentInterface(it)) ?? it; // group by nearest parent interface, or itself
-          const depth = depthByRem.get(parentIface._id) ?? entry.depth;
-          const key = parentIface._id;
+          const parent = await it.getParentRem();
+          if (!parent) continue;
+          const key = parent._id;
           if (!ifaceGroupMap.has(key)) {
-            const className = await getRemText(plugin, parentIface);
-            ifaceGroupMap.set(key, { classRem: parentIface, className, depth, items: [] });
+            const className = await getRemText(plugin, parent);
+            const depth = depthMap.get(parent._id) ?? 0;
+            ifaceGroupMap.set(key, { classRem: parent, className, depth, items: [] });
           }
           const name = await getRemText(plugin, it);
           ifaceGroupMap.get(key)!.items.push({ rem: it, name });

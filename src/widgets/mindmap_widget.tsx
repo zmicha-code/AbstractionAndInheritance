@@ -29,11 +29,19 @@ type HierarchyNode = {
 type GraphNodeData = {
   label: string;
   remId: string;
-  kind: "rem" | "property";
+  kind: "rem" | "property" | "interface";
+  hasOutgoing?: boolean;
 };
 
-const HORIZONTAL_SPACING = 180;
-const VERTICAL_SPACING = 140;
+const VERTICAL_SPACING = 70;
+
+const REM_HORIZONTAL_SPACING = 220;
+const REM_CHILD_GAP_UNITS = 1;
+const REM_UNIT_HEIGHT_PX = VERTICAL_SPACING;
+const REM_NODE_HEIGHT_ESTIMATE = 46;
+const ATTRIBUTE_NODE_HEIGHT_ESTIMATE = 40;
+const ATTRIBUTE_VERTICAL_MARGIN = 24;
+const ATTRIBUTE_HORIZONTAL_SPACING = 160;
 
 const DEFAULT_NODE_STYLE: React.CSSProperties = {
   padding: "6px 10px",
@@ -52,26 +60,28 @@ const CENTER_NODE_STYLE: React.CSSProperties = {
   fontWeight: 600,
 };
 
-type PropertyNodeInfo = {
+type AttributeNodeInfo = {
   id: string;
   label: string;
   extends: string[];
+  children: AttributeNodeInfo[];
 };
 
-type PropertyDetail = PropertyNodeInfo & {
-  ownerId: string;
+type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
+  ownerNodeId: string;
+  hasOutgoing: boolean;
+  hasChildren: boolean;
 };
 
-type PropertyData = {
-  byOwner: Record<string, PropertyNodeInfo[]>;
-  byId: Record<string, PropertyDetail>;
+type AttributeData = {
+  byOwner: Record<string, AttributeNodeInfo[]>;
+  byId: Record<string, AttributeDetail>;
 };
 
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
 
-const PROPERTY_HORIZONTAL_OFFSET = 220;
-const PROPERTY_VERTICAL_SPACING = 40;
+const ATTRIBUTE_VERTICAL_SPACING = 55;
 
 const PROPERTY_NODE_STYLE: React.CSSProperties = {
   padding: "6px 10px",
@@ -80,15 +90,30 @@ const PROPERTY_NODE_STYLE: React.CSSProperties = {
   borderRadius: 6,
   fontSize: 12,
   minWidth: 160,
-  textAlign: "left",
+  textAlign: "center",
+};
+
+const INTERFACE_NODE_STYLE: React.CSSProperties = {
+  padding: "6px 10px",
+  background: "#ecfdf5",
+  border: "1px solid #10b981",
+  borderRadius: 6,
+  fontSize: 12,
+  minWidth: 160,
+  textAlign: "center",
 };
 
 const REM_SOURCE_BOTTOM_HANDLE = "rem-source-bottom";
 const REM_TARGET_TOP_HANDLE = "rem-target-top";
 const REM_SOURCE_RIGHT_HANDLE = "rem-source-right";
-const PROPERTY_TARGET_LEFT_HANDLE = "property-target-left";
-const PROPERTY_SOURCE_RIGHT_HANDLE = "property-source-right";
-const PROPERTY_TARGET_RIGHT_HANDLE = "property-target-right";
+const REM_SOURCE_LEFT_HANDLE = "rem-source-left";
+const REM_TARGET_LEFT_HANDLE = "rem-target-left";
+const REM_TARGET_RIGHT_HANDLE = "rem-target-right";
+const ATTRIBUTE_TARGET_LEFT_HANDLE = "attribute-target-left";
+const ATTRIBUTE_SOURCE_RIGHT_HANDLE = "attribute-source-right";
+const ATTRIBUTE_SOURCE_BOTTOM_HANDLE = "attribute-source-bottom";
+const ATTRIBUTE_TARGET_TOP_HANDLE = "attribute-target-top";
+const ATTRIBUTE_TARGET_RIGHT_HANDLE = "attribute-target-right";
 
 const NODE_CONTAINER_STYLE: React.CSSProperties = {
   width: '100%',
@@ -101,7 +126,7 @@ const NODE_CONTAINER_STYLE: React.CSSProperties = {
   fontWeight: 'inherit',
 };
 
-const PROPERTY_CONTAINER_STYLE: React.CSSProperties = {
+const ATTRIBUTE_CONTAINER_STYLE: React.CSSProperties = {
   ...NODE_CONTAINER_STYLE,
   justifyContent: 'flex-start',
 };
@@ -144,9 +169,24 @@ const RIGHT_TARGET_HANDLE_STYLE: React.CSSProperties = {
   transform: 'translate(50%, -50%)',
 };
 
+const BOTTOM_SOURCE_HANDLE_STYLE: React.CSSProperties = {
+  bottom: -NODE_VERTICAL_PADDING,
+  left: '50%',
+  transform: 'translate(-50%, 50%)',
+};
+
+function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface'): number {
+  const fontSize = kind === 'rem' ? 13 : 12;
+  const avgCharWidth = fontSize * 0.6;
+  const textWidth = label.length * avgCharWidth;
+  const padding = 2 * 10;
+  const minWidth = kind === 'rem' ? 140 : 160;
+  return Math.max(minWidth, textWidth + padding);
+}
+
 function RemFlowNode({ data }: NodeProps<GraphNodeData>) {
   return (
-    <div style={NODE_CONTAINER_STYLE}>
+    <div style={{ ...NODE_CONTAINER_STYLE, cursor: 'pointer' }}>
       <Handle
         type="target"
         position={Position.Top}
@@ -165,6 +205,24 @@ function RemFlowNode({ data }: NodeProps<GraphNodeData>) {
         id={REM_SOURCE_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
       />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id={REM_SOURCE_LEFT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={REM_TARGET_LEFT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Right}
+        id={REM_TARGET_RIGHT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_TARGET_HANDLE_STYLE }}
+      />
       <span>{data.label}</span>
     </div>
   );
@@ -172,24 +230,74 @@ function RemFlowNode({ data }: NodeProps<GraphNodeData>) {
 
 function PropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
   return (
-    <div style={PROPERTY_CONTAINER_STYLE}>
+    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }}>
       <Handle
         type="target"
         position={Position.Left}
-        id={PROPERTY_TARGET_LEFT_HANDLE}
+        id={ATTRIBUTE_TARGET_LEFT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
       />
       <Handle
         type="source"
         position={Position.Right}
-        id={PROPERTY_SOURCE_RIGHT_HANDLE}
+        id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id={ATTRIBUTE_SOURCE_BOTTOM_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...BOTTOM_SOURCE_HANDLE_STYLE }}
       />
       <Handle
         type="target"
         position={Position.Right}
-        id={PROPERTY_TARGET_RIGHT_HANDLE}
+        id={ATTRIBUTE_TARGET_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_TARGET_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Top}
+        id={ATTRIBUTE_TARGET_TOP_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...TOP_HANDLE_STYLE }}
+      />
+      <span style={{ width: '100%' }}>{data.label}</span>
+    </div>
+  );
+}
+
+function InterfaceFlowNode({ data }: NodeProps<GraphNodeData>) {
+  return (
+    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={ATTRIBUTE_TARGET_LEFT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id={ATTRIBUTE_SOURCE_BOTTOM_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...BOTTOM_SOURCE_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Right}
+        id={ATTRIBUTE_TARGET_RIGHT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_TARGET_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Top}
+        id={ATTRIBUTE_TARGET_TOP_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...TOP_HANDLE_STYLE }}
       />
       <span style={{ width: '100%' }}>{data.label}</span>
     </div>
@@ -199,6 +307,7 @@ function PropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
 const NODE_TYPES = {
   remNode: RemFlowNode,
   propertyNode: PropertyFlowNode,
+  interfaceNode: InterfaceFlowNode,
 };
 
 async function buildAncestorNodes(
@@ -209,21 +318,16 @@ async function buildAncestorNodes(
   const parents = await getParentClass(plugin, rem);
   const uniqueParents = new Map<string, Rem>();
   for (const parent of parents) {
-    if (!parent) continue;
-    if (parent._id === rem._id) continue;
-    if (!uniqueParents.has(parent._id)) {
-      uniqueParents.set(parent._id, parent);
-    }
+    if (!parent || parent._id === rem._id || visited.has(parent._id)) continue;
+    uniqueParents.set(parent._id, parent);
   }
 
   const result: HierarchyNode[] = [];
   for (const parent of uniqueParents.values()) {
-    if (visited.has(parent._id)) continue;
-    const nextVisited = new Set(visited);
-    nextVisited.add(parent._id);
+    visited.add(parent._id);
     const [name, ancestors] = await Promise.all([
       getRemText(plugin, parent),
-      buildAncestorNodes(plugin, parent, nextVisited),
+      buildAncestorNodes(plugin, parent, visited),
     ]);
     result.push({
       id: parent._id,
@@ -246,7 +350,7 @@ async function getStructuralDescendantChildren(plugin: RNPlugin, rem: Rem): Prom
   );
   return meta
     .filter(({ isDoc, type }) => !isDoc && type !== RemType.DESCRIPTOR)
-    .map(({ child }) => child);
+    .map(({ child } ) => child);
 }
 
 async function buildDescendantNodes(
@@ -260,22 +364,21 @@ async function buildDescendantNodes(
   ]);
 
   const childMap = new Map<string, Rem>();
-  for (const child of [...extendsChildren, ...structuralChildren]) {
-    if (!child) continue;
-    if (child._id === rem._id) continue;
-    if (!childMap.has(child._id)) {
-      childMap.set(child._id, child);
-    }
+  for (const child of extendsChildren) {
+    if (!child || child._id === rem._id || visited.has(child._id)) continue;
+    childMap.set(child._id, child);
+  }
+  for (const child of structuralChildren) {
+    if (!child || child._id === rem._id || visited.has(child._id) || childMap.has(child._id)) continue;
+    childMap.set(child._id, child);
   }
 
   const result: HierarchyNode[] = [];
   for (const child of childMap.values()) {
-    if (visited.has(child._id)) continue;
-    const nextVisited = new Set(visited);
-    nextVisited.add(child._id);
+    visited.add(child._id);
     const [name, descendants] = await Promise.all([
       getRemText(plugin, child),
-      buildDescendantNodes(plugin, child, nextVisited),
+      buildDescendantNodes(plugin, child, visited),
     ]);
     result.push({
       id: child._id,
@@ -288,136 +391,217 @@ async function buildDescendantNodes(
   return result;
 }
 
-function measureSubtree(
+function measureSubtreeHeight(
   node: HierarchyNode,
   cache: Map<string, number>,
   collapsed: Set<string>
 ): number {
   if (cache.has(node.id)) return cache.get(node.id)!;
-  if (collapsed.has(node.id) || !node.children || node.children.length === 0) {
+  if (collapsed.has(node.id) || !node.children?.length) {
     cache.set(node.id, 1);
     return 1;
   }
+
   let total = 0;
-  for (const child of node.children) {
-    total += measureSubtree(child, cache, collapsed);
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    const childHeight = measureSubtreeHeight(child, cache, collapsed);
+    total += childHeight;
+    if (i < node.children.length - 1) {
+      total += REM_CHILD_GAP_UNITS;
+    }
   }
-  const value = Math.max(total, 1);
-  cache.set(node.id, value);
-  return value;
+
+  const result = Math.max(1, total);
+  cache.set(node.id, result);
+  return result;
 }
 
-function layoutForest(
-  forest: HierarchyNode[],
-  direction: "up" | "down",
-  parentId: string,
-  nodeStyle: React.CSSProperties,
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  existingNodeIds: Set<string>,
-  collapsed: Set<string>
-) {
-  if (forest.length === 0) return;
-
-  const widthCache = new Map<string, number>();
-  let totalWidth = 0;
-  for (const tree of forest) {
-    totalWidth += measureSubtree(tree, widthCache, collapsed);
-  }
-
-  let cursor = -totalWidth / 2;
-  for (const tree of forest) {
-    const width = widthCache.get(tree.id) ?? 1;
-    layoutTree(
-      tree,
-      cursor,
-      width,
-      1,
-      direction,
-      parentId,
-      nodeStyle,
-      nodes,
-      edges,
-      existingNodeIds,
-      widthCache,
-      collapsed
-    );
-    cursor += width;
-  }
+function unitToY(unit: number): number {
+  return unit * REM_UNIT_HEIGHT_PX;
 }
 
-function layoutTree(
+function layoutSubtreeHorizontal(
   node: HierarchyNode,
-  startUnit: number,
-  widthUnits: number,
-  level: number,
-  direction: "up" | "down",
-  parentId: string,
-  nodeStyle: React.CSSProperties,
+  parentNode: GraphNode,
+  orientation: "left" | "right",
+  relation: "ancestor" | "descendant",
+  centerUnit: number,
   nodes: GraphNode[],
   edges: GraphEdge[],
   existingNodeIds: Set<string>,
-  widthCache: Map<string, number>,
-  collapsed: Set<string>
-) {
-  const centerUnit = startUnit + widthUnits / 2;
-  const x = centerUnit * HORIZONTAL_SPACING;
-  const yMultiplier = direction === "up" ? -1 : 1;
-  const y = level * VERTICAL_SPACING * yMultiplier;
+  heightCache: Map<string, number>,
+  collapsed: Set<string>,
+  nodePositions?: Map<string, { x: number; y: number }>
+): GraphNode | null {
+  if (existingNodeIds.has(node.id)) {
+    return nodes.find((n) => n.id === node.id) ?? null;
+  }
 
-  if (!existingNodeIds.has(node.id)) {
-    const style = collapsed.has(node.id)
-      ? { ...nodeStyle, background: "#e2e8f0" }
-      : nodeStyle;
-    nodes.push({
-      id: node.id,
-      position: { x, y },
-      data: { label: node.name, remId: node.id, kind: "rem" },
-      style,
-      draggable: true,
-      selectable: true,
-      type: "remNode",
+  const estWidth = estimateNodeWidth(node.name, 'rem');
+  const parentData = parentNode.data as GraphNodeData;
+  const parentStyleWidth = parentNode.style?.width;
+  const parentWidth =
+    typeof parentStyleWidth === "number"
+      ? parentStyleWidth
+      : estimateNodeWidth(parentData.label, parentData.kind);
+
+  let x =
+    orientation === "right"
+      ? parentNode.position.x + parentWidth + REM_HORIZONTAL_SPACING
+      : parentNode.position.x - REM_HORIZONTAL_SPACING - estWidth;
+  let y = unitToY(centerUnit);
+
+  const stored = nodePositions?.get(node.id);
+  if (stored) {
+    x = stored.x;
+    y = stored.y;
+  }
+
+  const style = collapsed.has(node.id)
+    ? { ...DEFAULT_NODE_STYLE, background: "#e2e8f0", width: estWidth }
+    : { ...DEFAULT_NODE_STYLE, width: estWidth };
+
+  const graphNode: GraphNode = {
+    id: node.id,
+    position: { x, y },
+    data: { label: node.name, remId: node.id, kind: "rem" },
+    style,
+    draggable: true,
+    selectable: true,
+    type: "remNode",
+  };
+
+  nodes.push(graphNode);
+  existingNodeIds.add(node.id);
+
+  const parentId = parentNode.id;
+  const edgeId =
+    relation === "ancestor" ? `${node.id}->${parentId}` : `${parentId}->${node.id}`;
+
+  let sourceHandle: string;
+  let targetHandle: string;
+  if (orientation === "right") {
+    if (relation === "ancestor") {
+      sourceHandle = REM_SOURCE_LEFT_HANDLE;
+      targetHandle = REM_TARGET_RIGHT_HANDLE;
+    } else {
+      sourceHandle = REM_SOURCE_RIGHT_HANDLE;
+      targetHandle = REM_TARGET_LEFT_HANDLE;
+    }
+  } else {
+    if (relation === "ancestor") {
+      sourceHandle = REM_SOURCE_RIGHT_HANDLE;
+      targetHandle = REM_TARGET_LEFT_HANDLE;
+    } else {
+      sourceHandle = REM_SOURCE_LEFT_HANDLE;
+      targetHandle = REM_TARGET_RIGHT_HANDLE;
+    }
+  }
+
+  if (!edges.some((edge) => edge.id === edgeId)) {
+    edges.push({
+      id: edgeId,
+      source: relation === "ancestor" ? node.id : parentId,
+      target: relation === "ancestor" ? parentId : node.id,
+      sourceHandle,
+      targetHandle,
+      type: "smoothstep",
+      markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
     });
-    existingNodeIds.add(node.id);
   }
 
-  const edgeSource = direction === "up" ? node.id : parentId;
-  const edgeTarget = direction === "up" ? parentId : node.id;
-  edges.push({
-    id: `${edgeSource}->${edgeTarget}`,
-    source: edgeSource,
-    target: edgeTarget,
-    sourceHandle: REM_SOURCE_BOTTOM_HANDLE,
-    targetHandle: REM_TARGET_TOP_HANDLE,
-    type: "smoothstep",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-  });
-
-  if (collapsed.has(node.id) || !node.children || node.children.length === 0) {
-    return;
+  if (collapsed.has(node.id) || !node.children?.length) {
+    return graphNode;
   }
 
-  let childCursor = startUnit;
-  for (const child of node.children) {
-    const childWidth = widthCache.get(child.id) ?? 1;
-    layoutTree(
+  layoutChildrenHorizontal(
+    node.children,
+    graphNode,
+    orientation,
+    relation,
+    nodes,
+    edges,
+    existingNodeIds,
+    collapsed,
+    nodePositions,
+    heightCache
+  );
+
+  return graphNode;
+}
+
+function layoutChildrenHorizontal(
+  children: HierarchyNode[],
+  parentNode: GraphNode,
+  orientation: "left" | "right",
+  relation: "ancestor" | "descendant",
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  existingNodeIds: Set<string>,
+  collapsed: Set<string>,
+  nodePositions?: Map<string, { x: number; y: number }>,
+  heightCache: Map<string, number> = new Map()
+): void {
+  if (children.length === 0) return;
+
+  const parentUnit = parentNode.position.y / REM_UNIT_HEIGHT_PX;
+  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed));
+  const totalUnits =
+    heights.reduce((sum, h) => sum + h, 0) + Math.max(0, children.length - 1) * REM_CHILD_GAP_UNITS;
+
+  let currentUnit = parentUnit - totalUnits / 2;
+
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const childUnits = heights[i];
+    const childCenterUnit = currentUnit + childUnits / 2;
+    layoutSubtreeHorizontal(
       child,
-      childCursor,
-      childWidth,
-      level + 1,
-      direction,
-      node.id,
-      nodeStyle,
+      parentNode,
+      orientation,
+      relation,
+      childCenterUnit,
       nodes,
       edges,
       existingNodeIds,
-      widthCache,
-      collapsed
+      heightCache,
+      collapsed,
+      nodePositions
     );
-    childCursor += childWidth;
+    currentUnit += childUnits;
+    if (i < children.length - 1) {
+      currentUnit += REM_CHILD_GAP_UNITS;
+    }
   }
 }
 
+function layoutForestHorizontal(
+  forest: HierarchyNode[],
+  parentNode: GraphNode,
+  orientation: "left" | "right",
+  relation: "ancestor" | "descendant",
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  existingNodeIds: Set<string>,
+  collapsed: Set<string>,
+  nodePositions?: Map<string, { x: number; y: number }>
+): void {
+  if (forest.length === 0) return;
+  const heightCache = new Map<string, number>();
+  layoutChildrenHorizontal(
+    forest,
+    parentNode,
+    orientation,
+    relation,
+    nodes,
+    edges,
+    existingNodeIds,
+    collapsed,
+    nodePositions,
+    heightCache
+  );
+}
 
 function findNodeById(forest: HierarchyNode[], id: string): HierarchyNode | null {
   const stack: HierarchyNode[] = [...forest];
@@ -437,116 +621,283 @@ function createGraphData(
   ancestors: HierarchyNode[],
   descendants: HierarchyNode[],
   collapsed: Set<string>,
-  propertyData?: PropertyData,
-  hiddenProperties?: Set<string>
+  attributeData: AttributeData | undefined,
+  hiddenAttributes: Set<string>,
+  nodePositions: Map<string, { x: number; y: number }>,
+  kind: 'property' | 'interface'
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const nodes: GraphNode[] = [
-    {
-      id: centerId,
-      position: { x: 0, y: 0 },
-      data: { label: centerLabel, remId: centerId, kind: "rem" },
-      style: CENTER_NODE_STYLE,
-      draggable: true,
-      selectable: true,
-      type: "remNode",
-    },
-  ];
+  const centerWidth = estimateNodeWidth(centerLabel, 'rem');
+  const centerStored = nodePositions?.get(centerId);
+  const centerGraphNode: GraphNode = {
+    id: centerId,
+    position: centerStored ? { ...centerStored } : { x: -centerWidth / 2, y: 0 },
+    data: { label: centerLabel, remId: centerId, kind: "rem" },
+    style: { ...CENTER_NODE_STYLE, width: centerWidth },
+    draggable: true,
+    selectable: true,
+    type: "remNode",
+  };
+
+  const nodes: GraphNode[] = [centerGraphNode];
   const edges: GraphEdge[] = [];
   const existingIds = new Set<string>([centerId]);
 
-  layoutForest(
+  layoutForestHorizontal(
     ancestors,
-    "up",
-    centerId,
-    DEFAULT_NODE_STYLE,
+    centerGraphNode,
+    "left",
+    "ancestor",
     nodes,
     edges,
     existingIds,
-    collapsed
+    collapsed,
+    nodePositions
   );
-  layoutForest(
+
+  layoutForestHorizontal(
     descendants,
-    "down",
-    centerId,
-    DEFAULT_NODE_STYLE,
+    centerGraphNode,
+    "right",
+    "descendant",
     nodes,
     edges,
     existingIds,
-    collapsed
+    collapsed,
+    nodePositions
   );
 
-  return integratePropertyGraph(nodes, edges, propertyData, hiddenProperties);
+  return integrateAttributeGraph(nodes, edges, attributeData, hiddenAttributes, collapsed, nodePositions, kind);
 }
 
-function propertyNodeId(propertyId: string): string {
-  return `property:${propertyId}`;
+function attributeNodeId(kind: 'property' | 'interface', attributeId: string): string {
+  return `${kind}:${attributeId}`;
 }
 
-function layoutPropertiesForOwner(
+function layoutAttributeTree(
   ownerNode: GraphNode,
-  properties: PropertyNodeInfo[],
+  attributes: AttributeNodeInfo[],
   nodes: GraphNode[],
   edges: GraphEdge[],
   existingNodeIds: Set<string>,
   existingEdgeIds: Set<string>,
-  hiddenProperties?: Set<string>
+  hiddenAttributes: Set<string> | undefined,
+  attributeData: AttributeData,
+  collapsed: Set<string>,
+  kind: 'property' | 'interface',
+  nodePositions?: Map<string, { x: number; y: number }>
 ) {
-  if (properties.length === 0) {
-    return;
-  }
-
-  const visible = hiddenProperties
-    ? properties.filter((info) => !hiddenProperties.has(info.id))
-    : properties;
-
-  if (visible.length === 0) {
-    return;
-  }
-
+  const visible = hiddenAttributes ? attributes.filter((info) => !hiddenAttributes.has(info.id)) : attributes;
+  if (visible.length === 0) return;
   const sorted = [...visible].sort((a, b) => a.label.localeCompare(b.label));
-  const count = sorted.length;
-  const startOffset = ((count - 1) / 2) * PROPERTY_VERTICAL_SPACING;
-  const baseX = ownerNode.position.x + PROPERTY_HORIZONTAL_OFFSET;
-
+  const ownerData = ownerNode.data as GraphNodeData;
+  const ownerStyleWidth = ownerNode.style?.width;
+  const ownerWidth =
+    typeof ownerStyleWidth === "number"
+      ? ownerStyleWidth
+      : estimateNodeWidth(ownerData.label, ownerData.kind);
+  const ownerStyleHeight = ownerNode.style?.height;
+  const ownerHeight =
+    typeof ownerStyleHeight === "number"
+      ? ownerStyleHeight
+      : ownerData.kind === "rem"
+      ? REM_NODE_HEIGHT_ESTIMATE
+      : ATTRIBUTE_NODE_HEIGHT_ESTIMATE;
+  const baseY = ownerNode.position.y + ownerHeight + ATTRIBUTE_VERTICAL_MARGIN;
   sorted.forEach((info, index) => {
-    const nodeId = propertyNodeId(info.id);
-    if (!existingNodeIds.has(nodeId)) {
-      const y = ownerNode.position.y + index * PROPERTY_VERTICAL_SPACING - startOffset;
-      nodes.push({
-        id: nodeId,
-        position: { x: baseX, y },
-        data: { label: info.label, remId: info.id, kind: "property" },
-        style: PROPERTY_NODE_STYLE,
-        draggable: true,
-        selectable: true,
-        type: "propertyNode",
-      });
-      existingNodeIds.add(nodeId);
+    const nodeId = attributeNodeId(kind, info.id);
+    if (existingNodeIds.has(nodeId)) return;
+    const attrWidth = estimateNodeWidth(info.label, kind);
+    let posX = ownerNode.position.x + ownerWidth / 2 - attrWidth / 2;
+    let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
+    const storedPos = nodePositions?.get(nodeId);
+    if (storedPos) {
+      posX = storedPos.x;
+      posY = storedPos.y;
     }
+    const hasOutgoing = attributeData?.byId[info.id]?.hasOutgoing || false;
+    const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
+    const propStyle = hasOutgoing
+      ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
+      : { ...attrStyle, width: attrWidth };
+    nodes.push({
+      id: nodeId,
+      position: { x: posX, y: posY },
+      data: { label: info.label, remId: info.id, kind, hasOutgoing },
+      style: collapsed.has(info.id)
+        ? { ...propStyle, border: "1px solid #504e3eff" }
+        : propStyle,
+      draggable: true,
+      selectable: true,
+      type: `${kind}Node`,
+    });
+    existingNodeIds.add(nodeId);
+    const attributeGraphNode = nodes[nodes.length - 1];
 
-    const edgeId = `prop-link:${ownerNode.id}->${info.id}`;
+    const edgeId = `attr-link:${ownerNode.id}->${info.id}`;
     if (!existingEdgeIds.has(edgeId)) {
       edges.push({
         id: edgeId,
         source: ownerNode.id,
         target: nodeId,
-        sourceHandle: REM_SOURCE_RIGHT_HANDLE,
-        targetHandle: PROPERTY_TARGET_LEFT_HANDLE,
+        sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
         type: "smoothstep",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
       });
       existingEdgeIds.add(edgeId);
     }
+
+    if (!collapsed.has(info.id) && info.children.length > 0) {
+      layoutAttributeDescendants(
+        attributeGraphNode,
+        info.children,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        hiddenAttributes,
+        attributeData,
+        collapsed,
+        kind,
+        nodePositions
+      );
+    }
   });
 }
 
-function integratePropertyGraph(
+function layoutAttributeDescendants(
+  parentNode: GraphNode,
+  children: AttributeNodeInfo[],
   nodes: GraphNode[],
   edges: GraphEdge[],
-  propertyData?: PropertyData,
-  hiddenProperties?: Set<string>
+  existingNodeIds: Set<string>,
+  existingEdgeIds: Set<string>,
+  hiddenAttributes: Set<string> | undefined,
+  attributeData: AttributeData,
+  collapsed: Set<string>,
+  kind: 'property' | 'interface',
+  nodePositions?: Map<string, { x: number; y: number }>
+) {
+  const visibleChildren = hiddenAttributes
+    ? children.filter((child) => !hiddenAttributes.has(child.id))
+    : children;
+  if (visibleChildren.length === 0) return;
+
+  const sorted = [...visibleChildren].sort((a, b) => a.label.localeCompare(b.label));
+  const parentData = parentNode.data as GraphNodeData;
+  const parentStyleWidth = parentNode.style?.width;
+  const parentWidth =
+    typeof parentStyleWidth === "number"
+      ? parentStyleWidth
+      : estimateNodeWidth(parentData.label, parentData.kind);
+  const baseX = parentNode.position.x + parentWidth + ATTRIBUTE_HORIZONTAL_SPACING;
+  const startOffset = ((sorted.length - 1) / 2) * ATTRIBUTE_VERTICAL_SPACING;
+
+  sorted.forEach((info, index) => {
+    const nodeId = attributeNodeId(kind, info.id);
+    const attrWidth = estimateNodeWidth(info.label, kind);
+    let posX = baseX;
+    let posY = parentNode.position.y + index * ATTRIBUTE_VERTICAL_SPACING - startOffset;
+    const storedPos = nodePositions?.get(nodeId);
+    if (storedPos) {
+      posX = storedPos.x;
+      posY = storedPos.y;
+    }
+
+    const hasOutgoing = attributeData?.byId[info.id]?.hasOutgoing || false;
+    const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
+    const baseStyle = hasOutgoing
+      ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
+      : { ...attrStyle, width: attrWidth };
+    const nodeStyle = collapsed.has(info.id)
+      ? { ...baseStyle, border: "1px solid #504e3eff" }
+      : baseStyle;
+
+    let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
+    let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
+    const updatedData: GraphNodeData = {
+      label: info.label,
+      remId: info.id,
+      kind,
+      hasOutgoing,
+    };
+
+    if (!childNode) {
+      childNode = {
+        id: nodeId,
+        position: { x: posX, y: posY },
+        data: updatedData,
+        style: nodeStyle,
+        draggable: true,
+        selectable: true,
+        type: `${kind}Node`,
+      };
+      nodes.push(childNode);
+      existingNodeIds.add(nodeId);
+      childNodeIndex = nodes.length - 1;
+    } else {
+      if (!storedPos) {
+        childNode = {
+          ...childNode,
+          position: { x: posX, y: posY },
+          data: updatedData,
+          style: nodeStyle,
+        };
+        nodes[childNodeIndex] = childNode;
+      } else {
+        childNode = {
+          ...childNode,
+          data: updatedData,
+          style: nodeStyle,
+        };
+        nodes[childNodeIndex] = childNode;
+      }
+    }
+
+    existingNodeIds.add(nodeId);
+
+    const linkEdgeId = `attr-child:${parentNode.id}->${info.id}`;
+    if (!existingEdgeIds.has(linkEdgeId)) {
+      edges.push({
+        id: linkEdgeId,
+        source: parentNode.id,
+        target: nodeId,
+        sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+      });
+      existingEdgeIds.add(linkEdgeId);
+    }
+
+    if (!collapsed.has(info.id) && info.children.length > 0) {
+      layoutAttributeDescendants(
+        childNode,
+        info.children,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        hiddenAttributes,
+        attributeData,
+        collapsed,
+        kind,
+        nodePositions
+      );
+    }
+  });
+}
+
+function integrateAttributeGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  attributeData?: AttributeData,
+  hiddenAttributes?: Set<string>,
+  collapsed?: Set<string>,
+  nodePositions?: Map<string, { x: number; y: number }>,
+  kind?: 'property' | 'interface'
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  if (!propertyData) {
+  if (!attributeData || !collapsed || !kind) {
     return { nodes, edges };
   }
 
@@ -556,39 +907,43 @@ function integratePropertyGraph(
     nodes.filter((node) => node.data.kind === "rem").map((node) => [node.id, node])
   );
 
-  for (const [ownerId, propertyList] of Object.entries(propertyData.byOwner)) {
+  for (const [ownerId, attributeList] of Object.entries(attributeData.byOwner)) {
     const ownerNode = baseNodeMap.get(ownerId);
-    if (!ownerNode || propertyList.length === 0) {
+    if (!ownerNode || attributeList.length === 0) {
       continue;
     }
-    layoutPropertiesForOwner(
+    layoutAttributeTree(
       ownerNode,
-      propertyList,
+      attributeList,
       nodes,
       edges,
       existingNodeIds,
       existingEdgeIds,
-      hiddenProperties
+      hiddenAttributes,
+      attributeData,
+      collapsed,
+      kind,
+      nodePositions
     );
   }
 
-  for (const detail of Object.values(propertyData.byId)) {
-    if (hiddenProperties?.has(detail.id)) {
+  for (const detail of Object.values(attributeData.byId)) {
+    if (hiddenAttributes?.has(detail.id)) {
       continue;
     }
-    const childNodeId = propertyNodeId(detail.id);
+    const childNodeId = attributeNodeId(kind, detail.id);
     if (!existingNodeIds.has(childNodeId)) {
       continue;
     }
     for (const parentId of detail.extends) {
-      if (hiddenProperties?.has(parentId)) {
+      if (hiddenAttributes?.has(parentId)) {
         continue;
       }
-      const parentNodeId = propertyNodeId(parentId);
+      const parentNodeId = attributeNodeId(kind, parentId);
       if (!existingNodeIds.has(parentNodeId)) {
         continue;
       }
-      const edgeId = `prop-ext:${parentId}->${detail.id}`;
+      const edgeId = `attr-ext:${parentId}->${detail.id}`;
       if (existingEdgeIds.has(edgeId)) {
         continue;
       }
@@ -596,8 +951,8 @@ function integratePropertyGraph(
         id: edgeId,
         source: parentNodeId,
         target: childNodeId,
-        sourceHandle: PROPERTY_SOURCE_RIGHT_HANDLE,
-        targetHandle: PROPERTY_TARGET_RIGHT_HANDLE,
+        sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
         type: "smoothstep",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
       });
@@ -606,6 +961,45 @@ function integratePropertyGraph(
   }
 
   return { nodes, edges };
+}
+
+async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: GraphEdge[]): Promise<GraphEdge[]> {
+  const visibleRemIds = new Set(nodes.filter(n => n.type === "remNode").map(n => n.id));
+  const edgeMap = new Map(edges.map(e => [`${e.source}->${e.target}`, e.id]));
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const newEdges = [];
+  for (const remId of visibleRemIds) {
+    const rem = await plugin.rem.findOne(remId);
+    if (!rem) continue;
+    const [extendsC, structuralC] = await Promise.all([
+      getExtendsChildren(plugin, rem),
+      getStructuralDescendantChildren(plugin, rem)
+    ]);
+    const childrenIds = [...new Set([...extendsC, ...structuralC].filter(c => c).map(c => c._id).filter(id => visibleRemIds.has(id)))];
+    for (const childId of childrenIds) {
+      const edgeId = `${rem._id}->${childId}`;
+      if (!edgeMap.has(edgeId)) {
+        const sourceNode = nodeMap.get(rem._id);
+        const targetNode = nodeMap.get(childId);
+        let sourceHandle = REM_SOURCE_RIGHT_HANDLE;
+        let targetHandle = REM_TARGET_LEFT_HANDLE;
+        if (sourceNode && targetNode && sourceNode.position.x > targetNode.position.x) {
+          sourceHandle = REM_SOURCE_LEFT_HANDLE;
+          targetHandle = REM_TARGET_RIGHT_HANDLE;
+        }
+        newEdges.push({
+          id: edgeId,
+          source: rem._id,
+          target: childId,
+          sourceHandle,
+          targetHandle,
+          type: "smoothstep",
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        });
+      }
+    }
+  }
+  return [...edges, ...newEdges];
 }
 
 const buildDescendantOwnerMap = (descendants: HierarchyNode[]): Record<string, string> => {
@@ -625,6 +1019,7 @@ const buildDescendantOwnerMap = (descendants: HierarchyNode[]): Record<string, s
   }
   return map;
 };
+
 function collectRemsForProperties(
   center: Rem,
   ancestors: HierarchyNode[],
@@ -647,62 +1042,65 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
-async function buildPropertyData(plugin: RNPlugin, rems: Rem[]): Promise<PropertyData> {
-  const byOwner: Record<string, PropertyNodeInfo[]> = {};
-  const byId: Record<string, PropertyDetail> = {};
-  const uniqueRems = new Map<string, Rem>();
-  for (const rem of rems) {
-    if (rem && !uniqueRems.has(rem._id)) {
-      uniqueRems.set(rem._id, rem);
+async function buildAttributeData(plugin: RNPlugin, rems: Rem[], topLevelIsDocument: boolean, skipTopLevelForId?: string): Promise<AttributeData> {
+  const byOwner: Record<string, AttributeNodeInfo[]> = {};
+  const byId: Record<string, AttributeDetail> = {};
+  const extendsTargets = new Set<string>();
+
+  async function collectAttributes(owner: Rem, ownerNodeId: string, isSubAttribute: boolean = false): Promise<AttributeNodeInfo[]> {
+    if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
+      return [];
     }
-  }
-
-  const remList = Array.from(uniqueRems.values());
-
-  const results = await Promise.all(
-    remList.map(async (rem) => {
-      const properties: PropertyNodeInfo[] = [];
-      try {
-        const children = await getCleanChildren(plugin, rem);
+    let childrenRems: Rem[];
+    if (!isSubAttribute) {
+      const children = await getCleanChildren(plugin, owner);
+      if (topLevelIsDocument) {
         const docFlags = await Promise.all(children.map((child) => child.isDocument()));
-        for (let i = 0; i < children.length; i++) {
-          if (!docFlags[i]) {
-            continue;
-          }
-          const property = children[i];
-          const labelRaw = await getRemText(plugin, property);
-          let extendsIds: string[] = [];
-          try {
-            const parentRems = await getExtendsParents(plugin, property);
-            extendsIds = Array.from(new Set(parentRems.map((parent) => parent._id)));
-          } catch (_) {
-            extendsIds = [];
-          }
-          const label = (labelRaw ?? "").trim() || "(Untitled Property)";
-          properties.push({ id: property._id, label, extends: extendsIds });
-        }
-        properties.sort((a, b) => a.label.localeCompare(b.label));
-      } catch (_) {
-        // Ignore property gathering errors for this Rem.
+        childrenRems = children.filter((_, i) => docFlags[i]);
+      } else {
+        childrenRems = await getStructuralDescendantChildren(plugin, owner);
       }
-      return { ownerId: rem._id, properties };
-    })
-  );
-
-  for (const { ownerId, properties } of results) {
-    if (!properties || properties.length === 0) {
-      continue;
+    } else {
+      childrenRems = await getStructuralDescendantChildren(plugin, owner);
     }
-    byOwner[ownerId] = properties;
-    for (const entry of properties) {
-      byId[entry.id] = { ...entry, ownerId };
+    const attrs: AttributeNodeInfo[] = [];
+    for (const attr of childrenRems) {
+      if (skipTopLevelForId && attr._id === skipTopLevelForId) continue;
+      const labelRaw = await getRemText(plugin, attr);
+      const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
+      let extendsIds: string[] = [];
+      try {
+        const parentRems = await getExtendsParents(plugin, attr);
+        extendsIds = [...new Set(parentRems.map((p) => p._id))];
+        extendsIds.forEach((ext) => extendsTargets.add(ext));
+      } catch {}
+      const subChildren = await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true);
+      attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren });
     }
+    attrs.sort((a, b) => a.label.localeCompare(b.label));
+    attrs.forEach((p) => {
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasOutgoing: false, hasChildren: p.children.length > 0 };
+      if (!byId[p.id]) {
+        byId[p.id] = detail;
+      }
+    });
+    return attrs;
   }
+
+  const uniqueRems = [...new Map(rems.map((r) => [r._id, r])).values()];
+  for (const rem of uniqueRems) {
+    const attrs = await collectAttributes(rem, rem._id);
+    if (attrs.length > 0) byOwner[rem._id] = attrs;
+  }
+
+  Object.keys(byId).forEach((id) => {
+    byId[id].hasOutgoing = extendsTargets.has(id);
+  });
 
   return { byOwner, byId };
 }
 
-function SampleWidget() {
+function MindmapWidget() {
   const plugin = usePlugin();
 
   const focusedRem = useTracker(async (reactPlugin) => {
@@ -712,41 +1110,25 @@ function SampleWidget() {
   const [focusedRemName, setFocusedRemName] = useState<string>("");
   const [loadedRemName, setLoadedRemName] = useState<string>("");
   const [loadedRemId, setLoadedRemId] = useState<string>("");
-  const [editRemName, setEditRemName] = useState<string>("");
-  const [editRemId, setEditRemId] = useState<string>("");
   const [ancestorTrees, setAncestorTrees] = useState<HierarchyNode[]>([]);
   const [descendantTrees, setDescendantTrees] = useState<HierarchyNode[]>([]);
   const [descendantOwnerMap, setDescendantOwnerMap] = useState<Record<string, string>>({});
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set<string>());
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [propertyData, setPropertyData] = useState<PropertyData | null>(null);
-  const [hiddenProperties, setHiddenProperties] = useState<Set<string>>(() => new Set<string>());
+  const [propertyData, setPropertyData] = useState<AttributeData | null>(null);
+  const [interfaceData, setInterfaceData] = useState<AttributeData | null>(null);
+  const [hiddenAttributes, setHiddenAttributes] = useState<Set<string>>(() => new Set<string>());
+  const [attributeType, setAttributeType] = useState<'property' | 'interface'>('property');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [historyStack, setHistoryStack] = useState<string[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
+  const [parentMap, setParentMap] = useState<Map<string, string>>(new Map());
 
-  const hasFitViewRef = useRef(false);
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
-
-  const applyStoredPositions = useCallback((nodeList: GraphNode[]): GraphNode[] => {
-    return nodeList.map((node) => {
-      const saved = nodePositionsRef.current.get(node.id);
-      if (!saved) {
-        return node;
-      }
-      if (saved.x === node.position.x && saved.y === node.position.y) {
-        return node;
-      }
-      return {
-        ...node,
-        position: {
-          x: saved.x,
-          y: saved.y,
-        },
-      };
-    });
-  }, []);
+  const hiddenAttributeOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map());
 
   const storePositions = useCallback((nodeList: GraphNode[]) => {
     for (const node of nodeList) {
@@ -756,7 +1138,6 @@ function SampleWidget() {
       });
     }
   }, []);
-
 
   const focusedRemId = focusedRem?._id;
 
@@ -782,56 +1163,107 @@ function SampleWidget() {
     };
   }, [plugin, focusedRem]);
 
+  const updateGraph = useCallback(async () => {
+    if (!loadedRemId) return;
+    const attrData = attributeType === 'property' ? propertyData : interfaceData;
+    const graph = createGraphData(
+      loadedRemId,
+      loadedRemName || "(Untitled Rem)",
+      ancestorTrees,
+      descendantTrees,
+      collapsedNodes,
+      attrData ?? undefined,
+      hiddenAttributes,
+      nodePositionsRef.current,
+      attributeType
+    );
+    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    setNodes(graph.nodes);
+    storePositions(graph.nodes);
+    setEdges(updatedEdges);
+  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, hiddenAttributes, plugin, storePositions, attributeType]);
+
   const loadHierarchy = useCallback(
-    async (remId: string) => {
+    async (remId: string, ancestorsOnly?: boolean) => {
       setLoading(true);
       setError(null);
       setPropertyData(null);
-      setHiddenProperties(new Set<string>());
+      setInterfaceData(null);
+      setHiddenAttributes(new Set<string>());
+      setEdges([]);
       try {
         const rem = await plugin.rem.findOne(remId);
         if (!rem) {
           throw new Error("Unable to load the selected rem.");
         }
 
+        const visited = new Set<string>([rem._id]);
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
-          buildAncestorNodes(plugin, rem, new Set([rem._id])),
-          buildDescendantNodes(plugin, rem, new Set([rem._id])),
+          buildAncestorNodes(plugin, rem, visited),
+          ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visited),
         ]);
 
         const centerLabel = name || "(Untitled Rem)";
-        const collapsed = new Set<string>();
-        const remsForProperties = collectRemsForProperties(
+        const remsForAttributes = collectRemsForProperties(
           rem,
           ancestorTreesResult,
           descendantTreesResult
         );
-        const properties = await buildPropertyData(plugin, remsForProperties);
+        const [properties, interfaces] = await Promise.all([
+          buildAttributeData(plugin, remsForAttributes, true),
+          buildAttributeData(plugin, remsForAttributes, false, rem._id),
+        ]);
+        const collapsed = new Set<string>();
+        for (const detail of Object.values(properties.byId)) {
+          if (detail.hasChildren) {
+            collapsed.add(detail.id);
+          }
+        }
+        for (const detail of Object.values(interfaces.byId)) {
+          if (detail.hasChildren) {
+            collapsed.add(detail.id);
+          }
+        }
         const hidden = new Set<string>();
-        const graph = createGraphData(
-          rem._id,
-          centerLabel,
-          ancestorTreesResult,
-          descendantTreesResult,
-          collapsed,
-          properties,
-          hidden
-        );
 
         setAncestorTrees(ancestorTreesResult);
         setDescendantTrees(descendantTreesResult);
         setDescendantOwnerMap(buildDescendantOwnerMap(descendantTreesResult));
         setCollapsedNodes(collapsed);
-        hasFitViewRef.current = false;
         nodePositionsRef.current = new Map<string, { x: number; y: number }>();
-        setNodes(graph.nodes);
-        storePositions(graph.nodes);
-        setEdges(graph.edges);
         setPropertyData(properties);
-        setHiddenProperties(hidden);
+        setInterfaceData(interfaces);
+        setHiddenAttributes(hidden);
         setLoadedRemId(rem._id);
         setLoadedRemName(centerLabel);
+
+        const newParentMap = new Map<string, string>();
+        const buildRemParentMap = (forest: HierarchyNode[]) => {
+          const stack: { node: HierarchyNode; parent?: string }[] = forest.map((n) => ({ node: n }));
+          while (stack.length) {
+            const { node, parent } = stack.pop()!;
+            if (parent) newParentMap.set(node.id, parent);
+            node.children.forEach((child) => stack.push({ node: child, parent: node.id }));
+          }
+        };
+        buildRemParentMap(ancestorTreesResult);
+        buildRemParentMap(descendantTreesResult);
+
+        const buildAttrParentMap = (attrs: AttributeNodeInfo[], parentNodeId: string, kind: 'property' | 'interface') => {
+          attrs.forEach((p) => {
+            const attrNodeId = attributeNodeId(kind, p.id);
+            newParentMap.set(attrNodeId, parentNodeId);
+            buildAttrParentMap(p.children, attrNodeId, kind);
+          });
+        };
+        Object.entries(properties?.byOwner || {}).forEach(([ownerId, attrs]) => {
+          buildAttrParentMap(attrs, ownerId, 'property');
+        });
+        Object.entries(interfaces?.byOwner || {}).forEach(([ownerId, attrs]) => {
+          buildAttrParentMap(attrs, ownerId, 'interface');
+        });
+        setParentMap(newParentMap);
       } catch (err) {
         console.error(err);
         setError("Failed to build inheritance hierarchy.");
@@ -839,170 +1271,340 @@ function SampleWidget() {
         setLoading(false);
       }
     },
-    [plugin, storePositions]
+    [plugin, storePositions, updateGraph]
   );
 
-  const handleRefresh = useCallback(() => {
+  useEffect(() => {
+    if (loadedRemId && !loading) {
+      updateGraph();
+    }
+  }, [loadedRemId, ancestorTrees, descendantTrees, propertyData, interfaceData, collapsedNodes, hiddenAttributes, loading, updateGraph]);
+
+  // Subtree-aware drag propagation without double-applying deltas
+  const handleNodesChange = useCallback((changes) => {
+    setNodes((current) => {
+      const updated = applyNodeChanges(changes, current);
+      const prevById = new Map(current.map((n) => [n.id, n]));
+      const deltas = new Map<string, { dx: number; dy: number }>();
+
+      // Per-node direct deltas from this change
+      for (const n of updated) {
+        const prev = prevById.get(n.id);
+        if (!prev) continue;
+        const dx = (n.position?.x ?? 0) - (prev.position?.x ?? 0);
+        const dy = (n.position?.y ?? 0) - (prev.position?.y ?? 0);
+        if (dx || dy) deltas.set(n.id, { dx, dy });
+      }
+      if (deltas.size === 0) {
+        storePositions(updated);
+        return updated;
+      }
+
+      // Ancestor-accumulated delta (from nodes that actually moved directly)
+      const getAccumulatedDelta = (id: string): { dx: number; dy: number } | null => {
+        let cur = id;
+        let dx = 0, dy = 0;
+        const seen = new Set<string>();
+        while (parentMap.has(cur)) {
+          cur = parentMap.get(cur)!;
+          if (seen.has(cur)) break;
+          seen.add(cur);
+          const d = deltas.get(cur);
+          if (d) { dx += d.dx; dy += d.dy; }
+        }
+        return (dx || dy) ? { dx, dy } : null;
+      };
+
+      // Build children map once
+      const childrenMap = new Map<string, string[]>();
+      parentMap.forEach((p, c) => {
+        const list = childrenMap.get(p) ?? [];
+        list.push(c);
+        childrenMap.set(p, list);
+      });
+
+      // Hidden node store shifting
+      const updatedIdSet = new Set(updated.map((n) => n.id));
+      const shiftStoredIfHidden = (id: string, delta: { dx: number; dy: number }) => {
+        if (updatedIdSet.has(id)) return; // visible => handled via rendering adjustments
+        const prev = nodePositionsRef.current.get(id);
+        if (prev) {
+          nodePositionsRef.current.set(id, { x: prev.x + delta.dx, y: prev.y + delta.dy });
+        }
+      };
+
+      // Compute "move roots": direct-move nodes with no ancestor that also directly moved
+      const movedDirect = [...deltas.keys()];
+      const hasMovedAncestor = (id: string) => {
+        let cur = id;
+        const seen = new Set<string>();
+        while (parentMap.has(cur)) {
+          cur = parentMap.get(cur)!;
+          if (seen.has(cur)) break;
+          seen.add(cur);
+          if (deltas.has(cur)) return true;
+        }
+        return false;
+      };
+      const movedRoots = movedDirect.filter((id) => !hasMovedAncestor(id));
+
+      // Propagate deltas to hidden descendants exactly once
+      const shiftedHidden = new Set<string>();
+      for (const rootId of movedRoots) {
+        const delta = deltas.get(rootId)!;
+        const stack = [...(childrenMap.get(rootId) ?? [])];
+        while (stack.length) {
+          const id = stack.pop()!;
+          if (shiftedHidden.has(id)) continue;
+          shiftedHidden.add(id);
+          shiftStoredIfHidden(id, delta);
+          const kids = childrenMap.get(id);
+          if (kids?.length) stack.push(...kids);
+        }
+      }
+
+      // Adjust visible nodes that inherit motion from any directly-moved ancestor
+      let mutated = false;
+      const adjusted = updated.map((node) => {
+        // If this node was directly moved, ReactFlow already applied its delta
+        if (deltas.has(node.id)) return node;
+
+        // Sum deltas from moved ancestors (including owning REM for attributes via parentMap)
+        const effective = getAccumulatedDelta(node.id);
+
+        // Fallback: if an attribute somehow isn't in parentMap, inherit from its owner
+        if (!effective) {
+          const data = node.data as GraphNodeData | undefined;
+          if (data && (data.kind === 'property' || data.kind === 'interface')) {
+            const attrData = data.kind === 'property' ? propertyData : interfaceData;
+            const ownerId = attrData?.byId?.[data.remId]?.ownerNodeId;
+            if (ownerId) {
+              const d = deltas.get(ownerId) ?? getAccumulatedDelta(ownerId);
+              if (d) {
+                mutated = true;
+                return {
+                  ...node,
+                  position: { x: node.position.x + d.dx, y: node.position.y + d.dy },
+                };
+              }
+            }
+          }
+          return node;
+        }
+
+        mutated = true;
+        return {
+          ...node,
+          position: { x: node.position.x + effective.dx, y: node.position.y + effective.dy },
+        };
+      });
+
+      // Persist final positions
+      storePositions(mutated ? adjusted : updated);
+      return mutated ? adjusted : updated;
+    });
+  }, [parentMap, propertyData, interfaceData, storePositions]);
+
+
+  const handleLoad = useCallback(() => {
     if (!focusedRemId) {
       setError("Focus a rem before refreshing.");
       return;
     }
-    void loadHierarchy(focusedRemId);
+
+    if (loadedRemId && loadedRemId !== focusedRemId) {
+      setHistoryStack((prev) => [...prev, loadedRemId]);
+    }
+
+    nodePositionsRef.current = new Map();
+    loadHierarchy(focusedRemId);
   }, [focusedRemId, loadHierarchy]);
 
-  const openStoredRem = useCallback(async () => {
-    if (!editRemId) return;
-    const rem = (await plugin.rem.findOne(editRemId)) as Rem | null;
-    if (rem) {
-      void plugin.window.openRem(rem);
-    }
-  }, [plugin, editRemId]);
-
-  const gotoStoredRem = useCallback(() => {
-    if (!editRemId) return;
-    void loadHierarchy(editRemId);
-  }, [editRemId, loadHierarchy]);
-
-  const handleShowAll = useCallback(() => {
-    if (!loadedRemId || !propertyData || hiddenProperties.size === 0) {
+  const handleLoadAncestors = useCallback(() => {
+    if (!focusedRemId) {
+      setError("Focus a rem before loading ancestors.");
       return;
     }
-    const cleared = new Set<string>();
+
+    if (loadedRemId && loadedRemId !== focusedRemId) {
+      setHistoryStack((prev) => [...prev, loadedRemId]);
+    }
+
+    nodePositionsRef.current = new Map();
+    loadHierarchy(focusedRemId, true);
+  }, [focusedRemId, loadHierarchy]);
+
+  const handleToggleAttributes = useCallback(async () => {
+    if (!loadedRemId) {
+      return;
+    }
+    const currentData = attributeType === 'property' ? propertyData : interfaceData;
+    if (!currentData) {
+      return;
+    }
+    const oldHiddenSize = hiddenAttributes.size;
+    if (oldHiddenSize === 0) {
+      nodes.forEach((node) => {
+        const data = node.data as GraphNodeData;
+        if (data?.kind === attributeType) {
+          const detail = currentData.byId[data.remId];
+          if (detail) {
+            const ownerNode = nodes.find((n) => n.id === detail.ownerNodeId);
+            if (ownerNode) {
+              const dx = node.position.x - ownerNode.position.x;
+              const dy = node.position.y - ownerNode.position.y;
+              hiddenAttributeOffsetsRef.current.set(data.remId, { dx, dy });
+            }
+          }
+        }
+      });
+    }
+    const nextHidden = oldHiddenSize === 0 ? new Set(Object.keys(currentData.byId)) : new Set<string>();
     const graph = createGraphData(
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
-      propertyData,
-      cleared
+      currentData,
+      nextHidden,
+      nodePositionsRef.current,
+      attributeType
     );
-    const nodesWithPositions = applyStoredPositions(graph.nodes);
-    setHiddenProperties(cleared);
-    setNodes(nodesWithPositions);
-    storePositions(nodesWithPositions);
-    setEdges(graph.edges);
+    let displayNodes = graph.nodes;
+    if (oldHiddenSize !== 0 && nextHidden.size === 0) {
+      displayNodes = graph.nodes.map((node) => {
+        const data = node.data as GraphNodeData;
+        if (data.kind !== attributeType) {
+          return node;
+        }
+        const detail = currentData.byId[data.remId];
+        if (!detail) {
+          return node;
+        }
+        const ownerNode = graph.nodes.find((n) => n.id === detail.ownerNodeId);
+        if (!ownerNode) {
+          return node;
+        }
+        const storedOffset = hiddenAttributeOffsetsRef.current.get(data.remId);
+        if (storedOffset) {
+          const newPos = {
+            x: ownerNode.position.x + storedOffset.dx,
+            y: ownerNode.position.y + storedOffset.dy,
+          };
+          return {
+            ...node,
+            position: newPos,
+          };
+        }
+        return node;
+      });
+    }
+    const updatedEdges = await addMissingRemEdges(plugin, displayNodes, graph.edges);
+    setHiddenAttributes(nextHidden);
+    setNodes(displayNodes);
+    storePositions(displayNodes);
+    setEdges(updatedEdges);
   }, [
-    ancestorTrees,
-    collapsedNodes,
-    descendantTrees,
-    hiddenProperties,
+    attributeType,
+    propertyData,
+    interfaceData,
+    hiddenAttributes,
     loadedRemId,
     loadedRemName,
-    propertyData,
-    applyStoredPositions,
+    ancestorTrees,
+    descendantTrees,
+    collapsedNodes,
+    nodes,
+    plugin,
     storePositions
   ]);
 
-
-
-  const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      if (changes.length === 0) {
-        return;
-      }
-      setNodes((current) => {
-        if (current.length === 0) {
-          return current;
-        }
-
-        const deltas = new Map<string, { dx: number; dy: number }>();
-        for (const change of changes) {
-          if (change.type === 'position' && change.position) {
-            const previous = current.find((node) => node.id === change.id);
-            if (!previous) continue;
-            const dx = change.position.x - previous.position.x;
-            const dy = change.position.y - previous.position.y;
-            if (dx !== 0 || dy !== 0) {
-              deltas.set(change.id, { dx, dy });
+  const handleSwitchAttributes = useCallback(async () => {
+    if (!loadedRemId) {
+      return;
+    }
+    const oldType = attributeType;
+    const oldData = oldType === 'property' ? propertyData : interfaceData;
+    if (hiddenAttributes.size === 0 && oldData) {
+      nodes.forEach((node) => {
+        const data = node.data as GraphNodeData;
+        if (data?.kind === oldType) {
+          const detail = oldData.byId[data.remId];
+          if (detail) {
+            const ownerNode = nodes.find((n) => n.id === detail.ownerNodeId);
+            if (ownerNode) {
+              const dx = node.position.x - ownerNode.position.x;
+              const dy = node.position.y - ownerNode.position.y;
+              hiddenAttributeOffsetsRef.current.set(data.remId, { dx, dy });
             }
           }
         }
-
-        const updated = applyNodeChanges(changes, current);
-        if (deltas.size === 0) {
-          storePositions(updated);
-          return updated;
-        }
-
-        const deltaCache = new Map<string, { dx: number; dy: number } | null>();
-        const getAccumulatedDelta = (remId: string): { dx: number; dy: number } | null => {
-          if (deltas.has(remId)) {
-            return deltas.get(remId)!;
-          }
-          if (deltaCache.has(remId)) {
-            return deltaCache.get(remId)!;
-          }
-          const parentId = descendantOwnerMap[remId];
-          if (!parentId) {
-            deltaCache.set(remId, null);
-            return null;
-          }
-          const inherited = getAccumulatedDelta(parentId);
-          deltaCache.set(remId, inherited);
-          return inherited;
-        };
-
-        let mutated = false;
-        const adjusted = updated.map((node) => {
-          const data = node.data as GraphNodeData | undefined;
-          if (!data) {
-            return node;
-          }
-
-          if (data.kind === 'property') {
-            if (!propertyData) {
-              return node;
-            }
-            const detail = propertyData.byId[data.remId];
-            if (!detail) {
-              return node;
-            }
-            const ownerDirect = deltas.get(detail.ownerId);
-            const ownerDelta = ownerDirect ?? getAccumulatedDelta(detail.ownerId);
-            if (!ownerDelta) {
-              return node;
-            }
-            mutated = true;
-            return {
-              ...node,
-              position: {
-                x: node.position.x + ownerDelta.dx,
-                y: node.position.y + ownerDelta.dy,
-              },
-            };
-          }
-
-          if (data.kind === 'rem') {
-            if (deltas.has(node.id)) {
-              return node;
-            }
-            const inherited = getAccumulatedDelta(node.id);
-            if (!inherited) {
-              return node;
-            }
-            mutated = true;
-            return {
-              ...node,
-              position: {
-                x: node.position.x + inherited.dx,
-                y: node.position.y + inherited.dy,
-              },
-            };
-          }
-
-          return node;
-        });
-
-        const finalNodes = mutated ? adjusted : updated;
-        storePositions(finalNodes);
-        return finalNodes;
       });
-    },
-    [descendantOwnerMap, propertyData, storePositions]
-  );
+    }
+    const newType = attributeType === 'property' ? 'interface' : 'property';
+    setAttributeType(newType);
+    const nextHidden = new Set<string>();
+    setHiddenAttributes(nextHidden);
+    const newData = newType === 'property' ? propertyData : interfaceData;
+    if (!newData) return;
+    const graph = createGraphData(
+      loadedRemId,
+      loadedRemName || "(Untitled Rem)",
+      ancestorTrees,
+      descendantTrees,
+      collapsedNodes,
+      newData,
+      nextHidden,
+      nodePositionsRef.current,
+      newType
+    );
+    const displayNodes = graph.nodes.map((node) => {
+      const data = node.data as GraphNodeData;
+      if (data.kind !== newType) {
+        return node;
+      }
+      const detail = newData.byId[data.remId];
+      if (!detail) {
+        return node;
+      }
+      const ownerNode = graph.nodes.find((n) => n.id === detail.ownerNodeId);
+      if (!ownerNode) {
+        return node;
+      }
+      const storedOffset = hiddenAttributeOffsetsRef.current.get(data.remId);
+      if (storedOffset) {
+        const newPos = {
+          x: ownerNode.position.x + storedOffset.dx,
+          y: ownerNode.position.y + storedOffset.dy,
+        };
+        return {
+          ...node,
+          position: newPos,
+        };
+      }
+      return node;
+    });
+    const updatedEdges = await addMissingRemEdges(plugin, displayNodes, graph.edges);
+    setNodes(displayNodes);
+    storePositions(displayNodes);
+    setEdges(updatedEdges);
+  }, [
+    attributeType,
+    propertyData,
+    interfaceData,
+    hiddenAttributes,
+    loadedRemId,
+    loadedRemName,
+    ancestorTrees,
+    descendantTrees,
+    collapsedNodes,
+    nodes,
+    plugin,
+    storePositions
+  ]);
 
-  const toggleCollapseAll = useCallback(() => {
+  const handleToggleCollapseAll = useCallback(async () => {
     if (!loadedRemId) return;
 
     const collectIds = (trees: HierarchyNode[]): string[] => {
@@ -1014,59 +1616,37 @@ function SampleWidget() {
       return ids;
     };
 
-    const assignGraphPositions = (graphNodes: GraphNode[]) => {
-      const nextPositions = new Map<string, { x: number; y: number }>();
-      for (const node of graphNodes) {
-        nextPositions.set(node.id, { x: node.position.x, y: node.position.y });
-      }
-      nodePositionsRef.current = nextPositions;
-    };
+    const currentData = attributeType === 'property' ? propertyData : interfaceData;
 
     if (collapsedNodes.size > 0) {
       const next = new Set<string>();
-      const graph = createGraphData(
-        loadedRemId,
-        loadedRemName || "(Untitled Rem)",
-        ancestorTrees,
-        descendantTrees,
-        next,
-        propertyData ?? undefined,
-        hiddenProperties
-      );
-      assignGraphPositions(graph.nodes);
       setCollapsedNodes(next);
-      setNodes(graph.nodes);
-      setEdges(graph.edges);
+      await updateGraph();
     } else {
       const allIds = new Set<string>([
         ...collectIds(ancestorTrees),
         ...collectIds(descendantTrees),
       ]);
-      const graph = createGraphData(
-        loadedRemId,
-        loadedRemName || "(Untitled Rem)",
-        ancestorTrees,
-        descendantTrees,
-        allIds,
-        propertyData ?? undefined,
-        hiddenProperties
-      );
-      assignGraphPositions(graph.nodes);
+      if (currentData) {
+        for (const detail of Object.values(currentData.byId)) {
+          if (detail.hasChildren) {
+            allIds.add(detail.id);
+          }
+        }
+      }
       setCollapsedNodes(allIds);
-      setNodes(graph.nodes);
-      setEdges(graph.edges);
+      await updateGraph();
     }
   }, [
     ancestorTrees,
     descendantTrees,
     collapsedNodes,
     loadedRemId,
-    loadedRemName,
     propertyData,
-    hiddenProperties
+    interfaceData,
+    attributeType,
+    updateGraph
   ]);
-
-
 
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: GraphNode) => {
@@ -1074,112 +1654,163 @@ function SampleWidget() {
       event.stopPropagation();
       if (!loadedRemId) return;
 
-      const nodeData = (node.data ?? undefined) as GraphNodeData | undefined;
-      if (nodeData?.kind === "property") {
-        if (!propertyData) {
-          return;
-        }
-        const propertyId = nodeData.remId;
-        if (!propertyId) {
-          return;
-        }
-        const nextHidden = new Set<string>(hiddenProperties);
-        if (nextHidden.has(propertyId)) {
-          return;
-        }
-        nextHidden.add(propertyId);
-        const graph = createGraphData(
-          loadedRemId,
-          loadedRemName || "(Untitled Rem)",
-          ancestorTrees,
-          descendantTrees,
-          collapsedNodes,
-          propertyData,
-          nextHidden
-        );
-        const nodesWithPositions = applyStoredPositions(graph.nodes);
-        setHiddenProperties(nextHidden);
-        setNodes(nodesWithPositions);
-        storePositions(nodesWithPositions);
-        setEdges(graph.edges);
+      const data = (node.data ?? undefined) as GraphNodeData | undefined;
+      const targetId = data?.remId ?? node.id;
+
+      // Center node: keep current behavior, but don't call updateGraph() directly
+      if (targetId === loadedRemId) {
+        // const collectImmediateChildren = (trees: HierarchyNode[]): string[] => {
+        //   const ids: string[] = [];
+        //   for (const tree of trees) {
+        //     ids.push(tree.id);
+        //     ids.push(...tree.children.map((c) => c.id));
+        //   }
+        //   return ids;
+        // };
+        // const immediateDescendantIds = collectImmediateChildren(descendantTrees);
+        // setCollapsedNodes(new Set(immediateDescendantIds));
         return;
       }
 
-      const targetId = nodeData?.remId ?? node.id;
-      if (targetId === loadedRemId) return;
-      const target =
-        findNodeById(ancestorTrees, targetId) ?? findNodeById(descendantTrees, targetId);
-      if (!target || !target.children || target.children.length === 0) {
+      // Helpers
+      const collectIds = (trees: HierarchyNode[]) => {
+        const ids: string[] = [];
+        const stack = [...trees];
+        while (stack.length) {
+          const n = stack.pop()!;
+          ids.push(n.id);
+          if (n.children?.length) stack.push(...n.children);
+        }
+        return ids;
+      };
+      const collectSubtreeIds = (root: HierarchyNode) => {
+        const ids: string[] = [];
+        const stack = [root];
+        while (stack.length) {
+          const n = stack.pop()!;
+          ids.push(n.id);
+          if (n.children?.length) stack.push(...n.children);
+        }
+        return ids;
+      };
+
+      // REM nodes: default = per-node toggle; Shift = rest-of-side
+      if (!data || data.kind === "rem") {
+        // Center node special-case unchanged
+        if (targetId === loadedRemId) {
+          // const collectImmediateChildren = (trees: HierarchyNode[]): string[] => {
+          //   const ids: string[] = [];
+          //   for (const tree of trees) {
+          //     ids.push(tree.id);
+          //     ids.push(...tree.children.map((c) => c.id));
+          //   }
+          //   return ids;
+          // };
+          // const immediateDescendantIds = collectImmediateChildren(descendantTrees);
+          // setCollapsedNodes(new Set(immediateDescendantIds));
+          return;
+        }
+
+        // Default: per-node toggle
+        const t = findNodeById(ancestorTrees, targetId) ?? findNodeById(descendantTrees, targetId);
+        const hasChildren = !!t?.children?.length;
+        if (!hasChildren) return;
+        const next = new Set(collapsedNodes);
+        next.has(targetId) ? next.delete(targetId) : next.add(targetId);
+        setCollapsedNodes(next);
         return;
       }
-      const next = new Set<string>(collapsedNodes);
-      if (next.has(targetId)) {
-        next.delete(targetId);
+
+      // Attribute nodes: keep simple per-node toggle
+      let hasChildren = false;
+      if (data?.kind === "property" || data?.kind === "interface") {
+        const currentData = data.kind === "property" ? propertyData : interfaceData;
+        const detail = currentData?.byId[targetId];
+        hasChildren = !!detail?.hasChildren;
       } else {
-        next.add(targetId);
+        const t = findNodeById(ancestorTrees, targetId) ?? findNodeById(descendantTrees, targetId);
+        hasChildren = !!t?.children?.length;
       }
-      const graph = createGraphData(
-        loadedRemId,
-        loadedRemName || "(Untitled Rem)",
-        ancestorTrees,
-        descendantTrees,
-        next,
-        propertyData ?? undefined,
-        hiddenProperties
-      );
-      const nodesWithPositions = applyStoredPositions(graph.nodes);
+      if (!hasChildren) return;
+
+      const next = new Set(collapsedNodes);
+      next.has(targetId) ? next.delete(targetId) : next.add(targetId);
       setCollapsedNodes(next);
-      setNodes(nodesWithPositions);
-      storePositions(nodesWithPositions);
-      setEdges(graph.edges);
     },
-    [
-      ancestorTrees,
-      descendantTrees,
-      collapsedNodes,
-      loadedRemId,
-      loadedRemName,
-      propertyData,
-      hiddenProperties,
-      applyStoredPositions,
-      storePositions
-    ]
+    [loadedRemId, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData]
   );
 
+  const handleContextMenuClose = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleOpenContextRem = useCallback(async () => {
+    if (!contextMenu?.remId) return;
+    const rem = (await plugin.rem.findOne(contextMenu.remId)) as Rem | null;
+    if (rem) {
+      void plugin.window.openRem(rem);
+    }
+    handleContextMenuClose();
+  }, [contextMenu, plugin, handleContextMenuClose]);
+
+  const handleCopyContextRem = useCallback(async () => {
+    if (!contextMenu?.remId) return;
+    const rem = (await plugin.rem.findOne(contextMenu.remId)) as Rem | null;
+    if (rem) {
+      await rem.copyReferenceToClipboard();
+    }
+    handleContextMenuClose();
+  }, [contextMenu, plugin, handleContextMenuClose]);
+
+  const handleGotoContextRem = useCallback(() => {
+    if (!contextMenu?.remId) return;
+
+    if (loadedRemId && loadedRemId !== contextMenu.remId) {
+      setHistoryStack((prev) => [...prev, loadedRemId]);
+    }
+    nodePositionsRef.current = new Map();
+    loadHierarchy(contextMenu.remId);
+    handleContextMenuClose();
+  }, [contextMenu, loadHierarchy, handleContextMenuClose]);
+
+  const handleRefresh = useCallback(() => {
+    if (loadedRemId) {
+      loadHierarchy(loadedRemId);
+    }
+  }, [loadedRemId, loadHierarchy]);
+
+  const handleGoBack = useCallback(() => {
+    if (historyStack.length === 0) return;
+    const previousId = historyStack[historyStack.length - 1];
+    setHistoryStack((prev) => prev.slice(0, -1));
+    nodePositionsRef.current = new Map();
+    loadHierarchy(previousId);
+    handleContextMenuClose();
+  }, [historyStack, loadHierarchy, handleContextMenuClose]);
+
   const handleNodeContextMenu = useCallback(
-    async (event: React.MouseEvent, node: GraphNode) => {
+    (event: React.MouseEvent, node: GraphNode) => {
       event.preventDefault();
       event.stopPropagation();
       const nodeData = (node.data ?? undefined) as GraphNodeData | undefined;
       const remId = nodeData?.remId ?? node.id;
       if (!remId) return;
 
-      const rem = (await plugin.rem.findOne(remId)) as Rem | null;
-      if (!rem) return;
-
       const label = (nodeData?.label ?? "").trim();
-      setEditRemId(rem._id);
-      setEditRemName(label.length > 0 ? label : '(Untitled Rem)');
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        remId,
+        label: label.length > 0 ? label : '(Untitled Rem)'
+      });
     },
-    [plugin]
+    []
   );
 
   const showPlaceholder = nodes.length === 0;
 
   return (
-    <div style={{ padding: 12, color: "#0f172a", fontFamily: "Inter, sans-serif", fontSize: 14, height: "100%" }}>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 12, textTransform: "uppercase", color: "#64748b", letterSpacing: 0.5 }}>
-          Focused Rem
-        </div>
-        <div style={{ fontWeight: 600, marginTop: 2 }}>
-          {focusedRemId ? focusedRemName || "(Untitled Rem)" : "No rem focused"}
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12, color: "#475569" }}>
-          Loaded hierarchy: {loadedRemId ? loadedRemName : "Not loaded"}
-        </div>
-      </div>
-
+    <div style={{ padding: 12, fontFamily: "Inter, sans-serif", fontSize: 14, height: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
         <button
           style={{
@@ -1191,10 +1822,25 @@ function SampleWidget() {
             cursor: !focusedRemId || loading ? "not-allowed" : "pointer",
             fontWeight: 600,
           }}
-          onClick={handleRefresh}
+          onClick={handleLoad}
           disabled={!focusedRemId || loading}
         >
-          {loading ? "Refreshing..." : "Refresh"}
+          {loading ? "Refreshing..." : "Load Current Rem"}
+        </button>
+        <button
+          style={{
+            padding: "6px 12px",
+            background: !focusedRemId || loading ? "#cbd5f5" : "#2563eb",
+            color: !focusedRemId || loading ? "#475569" : "#ffffff",
+            border: "none",
+            borderRadius: 4,
+            cursor: !focusedRemId || loading ? "not-allowed" : "pointer",
+            fontWeight: 600,
+          }}
+          onClick={handleLoadAncestors}
+          disabled={!focusedRemId || loading}
+        >
+          {loading ? "Refreshing..." : "Load Current Rem (Ancestors)"}
         </button>
         <button
           style={{
@@ -1206,7 +1852,7 @@ function SampleWidget() {
             cursor: !loadedRemId ? 'not-allowed' : 'pointer',
             fontWeight: 600,
           }}
-          onClick={toggleCollapseAll}
+          onClick={handleToggleCollapseAll}
           disabled={!loadedRemId}
         >
           {collapsedNodes.size > 0 ? 'Expand All' : 'Collapse All'}
@@ -1214,63 +1860,78 @@ function SampleWidget() {
         <button
           style={{
             padding: '6px 12px',
-            background: hiddenProperties.size === 0 ? '#cbd5f5' : '#1f2937',
-            color: hiddenProperties.size === 0 ? '#475569' : '#ffffff',
+            background: '#1f2937',
+            color: '#ffffff',
             border: 'none',
             borderRadius: 4,
-            cursor: !loadedRemId || hiddenProperties.size === 0 || !propertyData ? 'not-allowed' : 'pointer',
+            cursor: !loadedRemId || (!propertyData && !interfaceData) ? 'not-allowed' : 'pointer',
             fontWeight: 600,
           }}
-          onClick={handleShowAll}
-          disabled={!loadedRemId || !propertyData || hiddenProperties.size === 0}
+          onClick={handleToggleAttributes}
+          disabled={!loadedRemId || (!propertyData && !interfaceData)}
         >
-          Show All
+          Toggle {attributeType.charAt(0).toUpperCase() + attributeType.slice(1)}
         </button>
-        {editRemId && editRemName && (
-          <>
-            <button
-              style={{
-                padding: '6px 12px',
-                background: '#10b981',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontWeight: 600,
-              }}
-              onClick={() => void openStoredRem()}
-            >
-              Open Rem in Pane
-            </button>
-            <button
-              style={{
-                padding: '6px 12px',
-                background: '#f97316',
-                color: '#ffffff',
-                border: 'none',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontWeight: 600,
-              }}
-              onClick={() => gotoStoredRem()}
-            >
-              Go To Rem
-            </button>
-          </>
-        )}
+        <button
+          style={{
+            padding: '6px 12px',
+            background: '#1f2937',
+            color: '#ffffff',
+            border: 'none',
+            borderRadius: 4,
+            cursor: !loadedRemId || (!propertyData && !interfaceData) ? 'not-allowed' : 'pointer',
+            fontWeight: 600,
+          }}
+          onClick={handleSwitchAttributes}
+          disabled={!loadedRemId || (!propertyData && !interfaceData)}
+        >
+          Switch to {attributeType === 'property' ? 'Interfaces' : 'Properties'}
+        </button>
+        <button
+          style={{
+            padding: "6px 12px",
+            background: !loadedRemId || loading ? "#cbd5f5" : "#2563eb",
+            color: !loadedRemId || loading ? "#475569" : "#ffffff",
+            border: "none",
+            borderRadius: 4,
+            cursor: !loadedRemId || loading ? "not-allowed" : "pointer",
+            fontWeight: 600,
+          }}
+          onClick={handleRefresh}
+          disabled={!loadedRemId}
+        >
+          Refresh
+        </button>
+        <button
+          style={{
+            padding: "6px 12px",
+            background: historyStack.length === 0 || loading ? "#cbd5f5" : "#2563eb",
+            color: historyStack.length === 0 || loading ? "#475569" : "#ffffff",
+            border: "none",
+            borderRadius: 4,
+            cursor: historyStack.length === 0 || loading ? "not-allowed" : "pointer",
+            fontWeight: 600,
+          }}
+          onClick={handleGoBack}
+          disabled={historyStack.length === 0}
+        >
+          Back
+        </button>
       </div>
 
       {error && <div style={{ color: "#dc2626", marginBottom: 8 }}>{error}</div>}
 
       <div
         style={{
-          height: "calc(100% - 120px)",
+          height: "calc(100% - 60px)",
           minHeight: 300,
           border: "1px solid #e2e8f0",
           borderRadius: 8,
           background: "#f8fafc",
           position: "relative",
+          color: "#0f172a"
         }}
+        onClick={handleContextMenuClose}
       >
         {showPlaceholder ? (
           <div style={{ padding: 24, color: "#64748b" }}>
@@ -1304,28 +1965,72 @@ function SampleWidget() {
             </ReactFlow>
           </ReactFlowProvider>
         )}
+        {contextMenu && (
+          <div
+            style={{
+              position: 'fixed',
+              left: contextMenu.x,
+              top: contextMenu.y,
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 4,
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+              zIndex: 1000,
+              minWidth: 160,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+              }}
+              onClick={handleOpenContextRem}
+            >
+              Open Rem in Pane
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+              }}
+              onClick={handleCopyContextRem}
+            >
+              Copy Rem
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+                borderTop: '1px solid #e2e8f0',
+              }}
+              onClick={handleGotoContextRem}
+            >
+              Go to Rem
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-renderWidget(SampleWidget);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+renderWidget(MindmapWidget);
