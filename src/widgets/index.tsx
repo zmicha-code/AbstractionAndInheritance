@@ -235,25 +235,15 @@ async function onActivate(plugin: ReactRNPlugin) {
   // Register a sidebar widget.
   await plugin.app.registerWidget('mindmap_widget', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
-  });
+    widgetTabIcon: "https://i.imgur.com/mzRl0P8.png"});
 
-  // WidgetLocation.Pane causes RemNote error
+  // WidgetLocation.Pane causes RemNote errors
   //await plugin.window.openWidgetInPane('mindmap_widget');
 
-  // Register a sidebar widget.
-  //await plugin.app.registerWidget('remInfo_widget', WidgetLocation.RightSidebar, {
-  //  dimensions: { height: 'auto', width: '100%' },
-  //});
-
-  //await plugin.app.registerWidget('implement_widget', WidgetLocation.RightSidebar, {
-  //  dimensions: { height: 'auto', width: '100%' },
-  //  widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
-  //});
-
-  await plugin.app.registerWidget('properties_widget', WidgetLocation.RightSidebar, {
-    dimensions: { height: 'auto', width: '100%' },
-    widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
-  });
+  // await plugin.app.registerWidget('properties_widget', WidgetLocation.RightSidebar, {
+  //   dimensions: { height: 'auto', width: '100%' },
+  //   widgetTabIcon: "https://i.imgur.com/mzRl0P8.png",
+  // });
 
   // New command: Implement descriptors
   await plugin.app.registerCommand({

@@ -71,6 +71,7 @@ type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
   ownerNodeId: string;
   hasOutgoing: boolean;
   hasChildren: boolean;
+  parentId?: string;
 };
 
 type AttributeData = {
@@ -615,7 +616,8 @@ function findNodeById(forest: HierarchyNode[], id: string): HierarchyNode | null
   return null;
 }
 
-function createGraphData(
+async function createGraphData(
+  plugin: RNPlugin,
   centerId: string,
   centerLabel: string,
   ancestors: HierarchyNode[],
@@ -625,7 +627,7 @@ function createGraphData(
   hiddenAttributes: Set<string>,
   nodePositions: Map<string, { x: number; y: number }>,
   kind: 'property' | 'interface'
-): { nodes: GraphNode[]; edges: GraphEdge[] } {
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   const centerWidth = estimateNodeWidth(centerLabel, 'rem');
   const centerStored = nodePositions?.get(centerId);
   const centerGraphNode: GraphNode = {
@@ -666,7 +668,7 @@ function createGraphData(
     nodePositions
   );
 
-  return integrateAttributeGraph(nodes, edges, attributeData, hiddenAttributes, collapsed, nodePositions, kind);
+  return integrateAttributeGraph(plugin, nodes, edges, attributeData, hiddenAttributes, collapsed, nodePositions, kind);
 }
 
 function attributeNodeId(kind: 'property' | 'interface', attributeId: string): string {
@@ -888,7 +890,8 @@ function layoutAttributeDescendants(
   });
 }
 
-function integrateAttributeGraph(
+async function integrateAttributeGraph(
+  plugin: RNPlugin,
   nodes: GraphNode[],
   edges: GraphEdge[],
   attributeData?: AttributeData,
@@ -896,7 +899,7 @@ function integrateAttributeGraph(
   collapsed?: Set<string>,
   nodePositions?: Map<string, { x: number; y: number }>,
   kind?: 'property' | 'interface'
-): { nodes: GraphNode[]; edges: GraphEdge[] } {
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   if (!attributeData || !collapsed || !kind) {
     return { nodes, edges };
   }
@@ -927,6 +930,58 @@ function integrateAttributeGraph(
     );
   }
 
+  async function findClosestVisibleAncestor(attributeId: string, existingNodeIds: Set<string>, kind: 'property' | 'interface'): Promise<string | null> {
+    const visited = new Set<string>();
+    const queue: string[] = [attributeId];
+
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (visited.has(currentId)) {
+        continue;
+      }
+      visited.add(currentId);
+
+      const nodeId = attributeNodeId(kind, currentId);
+      if (existingNodeIds.has(nodeId)) {
+        return currentId;
+      }
+
+      let currentRem: PluginRem | null = null;
+      try {
+        currentRem = (await plugin.rem.findOne(currentId)) as PluginRem | null;
+      } catch (_) {
+        currentRem = null;
+      }
+      if (!currentRem) {
+        continue;
+      }
+
+      // If this attribute rem is not a document, its structural parent is also a candidate ancestor.
+      try {
+        const [parentRem, isDoc] = await Promise.all([currentRem.getParentRem(), currentRem.isDocument()]);
+        if (!isDoc && parentRem && !visited.has(parentRem._id)) {
+          queue.push(parentRem._id);
+        }
+      } catch (_) {
+        // Ignore parent lookup failures
+      }
+
+      let parents: PluginRem[] = [];
+      try {
+        parents = await getExtendsParents(plugin, currentRem);
+      } catch (_) {
+        parents = [];
+      }
+      for (const parent of parents) {
+        if (!visited.has(parent._id)) {
+          queue.push(parent._id);
+        }
+      }
+    }
+
+    return null;
+  }
+
   for (const detail of Object.values(attributeData.byId)) {
     if (hiddenAttributes?.has(detail.id)) {
       continue;
@@ -941,22 +996,39 @@ function integrateAttributeGraph(
       }
       const parentNodeId = attributeNodeId(kind, parentId);
       if (!existingNodeIds.has(parentNodeId)) {
-        continue;
+        const visibleTargetId = await findClosestVisibleAncestor(parentId, existingNodeIds, kind);
+        if (visibleTargetId && visibleTargetId !== detail.id) {
+          const targetNodeId = attributeNodeId(kind, visibleTargetId);
+          const edgeId = `attr-ext:${visibleTargetId}->${detail.id}`;
+          if (!existingEdgeIds.has(edgeId)) {
+            edges.push({
+              id: edgeId,
+              source: targetNodeId,
+              target: childNodeId,
+              sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+              targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+              type: "smoothstep",
+              markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+            });
+            existingEdgeIds.add(edgeId);
+          }
+        }
+      } else {
+        const edgeId = `attr-ext:${parentId}->${detail.id}`;
+        if (existingEdgeIds.has(edgeId)) {
+          continue;
+        }
+        edges.push({
+          id: edgeId,
+          source: parentNodeId,
+          target: childNodeId,
+          sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+          targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+          type: "smoothstep",
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        });
+        existingEdgeIds.add(edgeId);
       }
-      const edgeId = `attr-ext:${parentId}->${detail.id}`;
-      if (existingEdgeIds.has(edgeId)) {
-        continue;
-      }
-      edges.push({
-        id: edgeId,
-        source: parentNodeId,
-        target: childNodeId,
-        sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
-        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
-        type: "smoothstep",
-        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-      });
-      existingEdgeIds.add(edgeId);
     }
   }
 
@@ -1047,7 +1119,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
   const byId: Record<string, AttributeDetail> = {};
   const extendsTargets = new Set<string>();
 
-  async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false): Promise<AttributeNodeInfo[]> {
+  async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false, parentId?: string): Promise<AttributeNodeInfo[]> {
     if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
       return [];
     }
@@ -1074,12 +1146,12 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         extendsIds = [...new Set(parentRems.map((p) => p._id))];
         extendsIds.forEach((ext) => extendsTargets.add(ext));
       } catch {}
-      const subChildren = await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true);
+      const subChildren = await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
       attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasOutgoing: false, hasChildren: p.children.length > 0 };
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasOutgoing: false, hasChildren: p.children.length > 0, parentId };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1166,7 +1238,8 @@ function MindmapWidget() {
   const updateGraph = useCallback(async () => {
     if (!loadedRemId) return;
     const attrData = attributeType === 'property' ? propertyData : interfaceData;
-    const graph = createGraphData(
+    const graph = await createGraphData(
+      plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
       ancestorTrees,
@@ -1197,6 +1270,7 @@ function MindmapWidget() {
           throw new Error("Unable to load the selected rem.");
         }
 
+        // 1.1 Collect Ancestors and Descendants
         const visited = new Set<string>([rem._id]);
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
@@ -1204,6 +1278,7 @@ function MindmapWidget() {
           ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visited),
         ]);
 
+        // 1.2 Collect Properties
         const centerLabel = name || "(Untitled Rem)";
         const remsForAttributes = collectRemsForProperties(
           rem,
@@ -1214,6 +1289,8 @@ function MindmapWidget() {
           buildAttributeData(plugin, remsForAttributes, true),
           buildAttributeData(plugin, remsForAttributes, false, rem._id),
         ]);
+
+        // 1.3
         const collapsed = new Set<string>();
         for (const detail of Object.values(properties.byId)) {
           if (detail.hasChildren) {
@@ -1460,7 +1537,8 @@ function MindmapWidget() {
       });
     }
     const nextHidden = oldHiddenSize === 0 ? new Set(Object.keys(currentData.byId)) : new Set<string>();
-    const graph = createGraphData(
+    const graph = await createGraphData(
+      plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
       ancestorTrees,
@@ -1548,7 +1626,8 @@ function MindmapWidget() {
     setHiddenAttributes(nextHidden);
     const newData = newType === 'property' ? propertyData : interfaceData;
     if (!newData) return;
-    const graph = createGraphData(
+    const graph = await createGraphData(
+      plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
       ancestorTrees,
