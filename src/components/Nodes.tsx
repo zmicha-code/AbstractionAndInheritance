@@ -4,6 +4,89 @@ import { Handle, Position } from "@xyflow/react";
 import { calcNodeHeight
 } from "../utils/utils";
 
+// ============================================
+// Mindmap Node Styles
+// ============================================
+
+const MINDMAP_NODE_BASE: React.CSSProperties = {
+  padding: "6px 10px",
+  borderRadius: 6,
+  textAlign: "center",
+};
+
+// REM Node Styles
+export const REM_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#ffffff",
+  border: "1px solid #cbd5f5",
+  fontSize: 13,
+  minWidth: 140,
+};
+
+export const REM_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...REM_NODE_STYLE,
+  background: "#e2e8f0",
+};
+
+export const REM_NODE_STYLE_CENTER: React.CSSProperties = {
+  ...REM_NODE_STYLE,
+  border: "2px solid #1d4ed8",
+  background: "#dbeafe",
+  fontWeight: 600,
+};
+
+// Property Node Styles
+export const PROPERTY_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#fefce8",
+  border: "1px solid #facc15",
+  fontSize: 12,
+  minWidth: 160,
+};
+
+export const PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...PROPERTY_NODE_STYLE,
+  background: "#f1de90",
+};
+
+// Interface Node Styles
+export const INTERFACE_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#ecfdf5",
+  border: "1px solid #10b981",
+  fontSize: 12,
+  minWidth: 160,
+};
+
+export const INTERFACE_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...INTERFACE_NODE_STYLE,
+  background: "#a7f3d0",
+};
+
+// Helper to get the appropriate style with optional width
+export function getNodeStyle(
+  kind: 'rem' | 'property' | 'interface',
+  isCollapsed: boolean,
+  isCenter: boolean = false,
+  width?: number
+): React.CSSProperties {
+  let style: React.CSSProperties;
+  
+  if (kind === 'rem') {
+    if (isCenter) {
+      style = REM_NODE_STYLE_CENTER;
+    } else {
+      style = isCollapsed ? REM_NODE_STYLE_COLLAPSED : REM_NODE_STYLE;
+    }
+  } else if (kind === 'property') {
+    style = isCollapsed ? PROPERTY_NODE_STYLE_COLLAPSED : PROPERTY_NODE_STYLE;
+  } else {
+    style = isCollapsed ? INTERFACE_NODE_STYLE_COLLAPSED : INTERFACE_NODE_STYLE;
+  }
+  
+  return width ? { ...style, width } : style;
+}
+
 export interface NodeData {
   [key: string]: unknown;
   label: string;

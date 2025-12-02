@@ -19,6 +19,16 @@ import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType
 
 import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
+import {
+  REM_NODE_STYLE,
+  REM_NODE_STYLE_COLLAPSED,
+  REM_NODE_STYLE_CENTER,
+  PROPERTY_NODE_STYLE,
+  PROPERTY_NODE_STYLE_COLLAPSED,
+  INTERFACE_NODE_STYLE,
+  INTERFACE_NODE_STYLE_COLLAPSED,
+  getNodeStyle,
+} from "../components/Nodes";
 
 type HierarchyNode = {
   id: string;
@@ -31,7 +41,6 @@ type GraphNodeData = {
   label: string;
   remId: string;
   kind: "rem" | "property" | "interface";
-  hasOutgoing?: boolean;
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
@@ -49,22 +58,7 @@ const ATTRIBUTE_HORIZONTAL_SPACING = 47; // 160
 // Vertical Space Between Different Property Nodes of One REM Node
 const ATTRIBUTE_VERTICAL_SPACING = 55; // 55
 
-const DEFAULT_NODE_STYLE: React.CSSProperties = {
-  padding: "6px 10px",
-  background: "#ffffff",
-  border: "1px solid #cbd5f5",
-  borderRadius: 6,
-  fontSize: 13,
-  textAlign: "center",
-  minWidth: 140,
-};
-
-const CENTER_NODE_STYLE: React.CSSProperties = {
-  ...DEFAULT_NODE_STYLE,
-  border: "2px solid #1d4ed8",
-  background: "#dbeafe",
-  fontWeight: 600,
-};
+// Node styles are now imported from ../components/Nodes
 
 type AttributeNodeInfo = {
   id: string;
@@ -75,7 +69,6 @@ type AttributeNodeInfo = {
 
 type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
   ownerNodeId: string;
-  hasOutgoing: boolean;
   hasChildren: boolean;
   parentId?: string;
 };
@@ -100,25 +93,7 @@ type MindMapState = {
   historyStack: string[];
 };
 
-const PROPERTY_NODE_STYLE: React.CSSProperties = {
-  padding: "6px 10px",
-  background: "#fefce8",
-  border: "1px solid #facc15",
-  borderRadius: 6,
-  fontSize: 12,
-  minWidth: 160,
-  textAlign: "center",
-};
-
-const INTERFACE_NODE_STYLE: React.CSSProperties = {
-  padding: "6px 10px",
-  background: "#ecfdf5",
-  border: "1px solid #10b981",
-  borderRadius: 6,
-  fontSize: 12,
-  minWidth: 160,
-  textAlign: "center",
-};
+// Property and Interface node styles are now imported from ../components/Nodes
 
 const REM_SOURCE_BOTTOM_HANDLE = "rem-source-bottom";
 const REM_TARGET_TOP_HANDLE = "rem-target-top";
@@ -489,9 +464,7 @@ function layoutSubtreeHorizontal(
     y = stored.y;
   }
 
-  const style = collapsed.has(node.id)
-    ? { ...DEFAULT_NODE_STYLE, background: "#e2e8f0", width: estWidth }
-    : { ...DEFAULT_NODE_STYLE, width: estWidth };
+  const style = getNodeStyle('rem', collapsed.has(node.id), false, estWidth);
 
   const graphNode: GraphNode = {
     id: node.id,
@@ -674,7 +647,7 @@ async function createGraphData(
     id: centerId,
     position: centerStored ? { ...centerStored } : { x: -centerWidth / 2, y: 0 },
     data: { label: centerLabel, remId: centerId, kind: "rem" },
-    style: { ...CENTER_NODE_STYLE, width: centerWidth },
+    style: getNodeStyle('rem', false, true, centerWidth),
     draggable: true,
     selectable: true,
     type: "remNode",
@@ -762,18 +735,12 @@ function layoutAttributeTree(
       posX = storedPos.x;
       posY = storedPos.y;
     }
-    const hasOutgoing = false; //attributeData?.byId[info.id]?.hasOutgoing || false;
-    const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
-    const propStyle = hasOutgoing
-      ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
-      : { ...attrStyle, width: attrWidth };
+    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false, attrWidth);
     nodes.push({
       id: nodeId,
       position: { x: posX, y: posY },
-      data: { label: info.label, remId: info.id, kind, hasOutgoing },
-      style: collapsed.has(info.id)
-        ? {... propStyle, background: "#f1de90ff" } //{ ...propStyle, border: "1px solid #504e3eff" }
-        : propStyle,
+      data: { label: info.label, remId: info.id, kind },
+      style: nodeStyle,
       draggable: true,
       selectable: true,
       type: `${kind}Node`,
@@ -852,14 +819,7 @@ function layoutAttributeDescendants(
       posY = storedPos.y;
     }
 
-    const hasOutgoing = false; //attributeData?.byId[info.id]?.hasOutgoing || false;
-    const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
-    const baseStyle = hasOutgoing
-      ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
-      : { ...attrStyle, width: attrWidth };
-    const nodeStyle = collapsed.has(info.id)
-      ? {... baseStyle, background: "#f1de90ff" } // { ...baseStyle, border: "1px solid #504e3eff" }
-      : baseStyle;
+    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false, attrWidth);
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -867,7 +827,6 @@ function layoutAttributeDescendants(
       label: info.label,
       remId: info.id,
       kind,
-      hasOutgoing,
     };
 
     if (!childNode) {
@@ -1149,7 +1108,6 @@ function collectRemsForProperties(
 async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
-  const extendsTargets = new Set<string>();
 
   async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false, parentId?: string): Promise<AttributeNodeInfo[]> {
     if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
@@ -1176,14 +1134,13 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       try {
         const parentRems = await getExtendsParents(plugin, attr);
         extendsIds = [...new Set(parentRems.map((p) => p._id))];
-        extendsIds.forEach((ext) => extendsTargets.add(ext));
       } catch {}
       const subChildren = await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
       attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasOutgoing: false, hasChildren: p.children.length > 0, parentId };
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1196,10 +1153,6 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     const attrs = await collectAttributes(rem, rem._id);
     if (attrs.length > 0) byOwner[rem._id] = attrs;
   }
-
-  Object.keys(byId).forEach((id) => {
-    byId[id].hasOutgoing = extendsTargets.has(id);
-  });
 
   return { byOwner, byId };
 }

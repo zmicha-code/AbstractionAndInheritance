@@ -18,7 +18,7 @@ function getRandomOffset(edgeId: string): number {
 /**
  * Custom edge component that creates a stepped path with a randomized bend point.
  * Instead of bending at the midpoint (0.5), the bend occurs at a random position
- * between 1/4 and 3/4 of the horizontal distance between nodes.
+ * between 10% and 75% of the horizontal distance between nodes.
  */
 export function RandomOffsetEdge({
   id,
