@@ -33,15 +33,20 @@ type GraphNodeData = {
   hasOutgoing?: boolean;
 };
 
-const VERTICAL_SPACING = 70;
-
-const REM_HORIZONTAL_SPACING = 220;
+// Vertical Space Between Different Ancestor or Descendant REM Nodes
+const VERTICAL_SPACING = 35;
+// Horizontal Space Between Ancestor and Descendant REM Nodes
+const REM_HORIZONTAL_SPACING = 110; // 220
 const REM_CHILD_GAP_UNITS = 1;
 const REM_UNIT_HEIGHT_PX = VERTICAL_SPACING;
 const REM_NODE_HEIGHT_ESTIMATE = 46;
 const ATTRIBUTE_NODE_HEIGHT_ESTIMATE = 40;
-const ATTRIBUTE_VERTICAL_MARGIN = 24;
-const ATTRIBUTE_HORIZONTAL_SPACING = 160;
+// Vertical Space Between Rem Node and Property Nodes
+const ATTRIBUTE_VERTICAL_MARGIN = 12; // 24
+// Horizontal Space Between Ancestor and Descendant Property Nodes
+const ATTRIBUTE_HORIZONTAL_SPACING = 47; // 160
+// Vertical Space Between Different Property Nodes of One REM Node
+const ATTRIBUTE_VERTICAL_SPACING = 55; // 55
 
 const DEFAULT_NODE_STYLE: React.CSSProperties = {
   padding: "6px 10px",
@@ -81,8 +86,6 @@ type AttributeData = {
 
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
-
-const ATTRIBUTE_VERTICAL_SPACING = 55;
 
 const PROPERTY_NODE_STYLE: React.CSSProperties = {
   padding: "6px 10px",
@@ -175,6 +178,11 @@ const BOTTOM_SOURCE_HANDLE_STYLE: React.CSSProperties = {
   left: '50%',
   transform: 'translate(-50%, 50%)',
 };
+
+function getRandomColor() {
+  // Generates a random hex color
+  return "#" + Math.floor(Math.random()*16777215).toString(16);
+}
 
 function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface'): number {
   const fontSize = kind === 'rem' ? 13 : 12;
@@ -395,25 +403,34 @@ async function buildDescendantNodes(
 function measureSubtreeHeight(
   node: HierarchyNode,
   cache: Map<string, number>,
-  collapsed: Set<string>
+  collapsed: Set<string>,
+  attributeData?: AttributeData,
+  hiddenAttributes?: Set<string>,
+  kind?: 'property' | 'interface'
 ): number {
   if (cache.has(node.id)) return cache.get(node.id)!;
+  let baseHeight = 1;
   if (collapsed.has(node.id) || !node.children?.length) {
-    cache.set(node.id, 1);
-    return 1;
-  }
-
-  let total = 0;
-  for (let i = 0; i < node.children.length; i++) {
-    const child = node.children[i];
-    const childHeight = measureSubtreeHeight(child, cache, collapsed);
-    total += childHeight;
-    if (i < node.children.length - 1) {
-      total += REM_CHILD_GAP_UNITS;
+    // baseHeight = 1;
+  } else {
+    let total = 0;
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      const childHeight = measureSubtreeHeight(child, cache, collapsed, attributeData, hiddenAttributes, kind);
+      total += childHeight;
+      if (i < node.children.length - 1) {
+        total += REM_CHILD_GAP_UNITS;
+      }
     }
+    baseHeight = Math.max(1, total);
   }
-
-  const result = Math.max(1, total);
+  let attributeHeight = 0;
+  if (attributeData && kind && attributeData.byOwner[node.id]) {
+    const attrs = attributeData.byOwner[node.id];
+    const visible = hiddenAttributes ? attrs.filter(a => !hiddenAttributes.has(a.id)) : attrs;
+    attributeHeight = visible.length * (ATTRIBUTE_VERTICAL_SPACING / REM_UNIT_HEIGHT_PX);
+  }
+  const result = baseHeight + attributeHeight;
   cache.set(node.id, result);
   return result;
 }
@@ -509,6 +526,7 @@ function layoutSubtreeHorizontal(
       targetHandle,
       type: "smoothstep",
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+      style: { stroke: getRandomColor() }
     });
   }
 
@@ -542,12 +560,15 @@ function layoutChildrenHorizontal(
   existingNodeIds: Set<string>,
   collapsed: Set<string>,
   nodePositions?: Map<string, { x: number; y: number }>,
-  heightCache: Map<string, number> = new Map()
+  heightCache: Map<string, number> = new Map(),
+  attributeData?: AttributeData,
+  hiddenAttributes?: Set<string>,
+  kind?: 'property' | 'interface'
 ): void {
   if (children.length === 0) return;
 
   const parentUnit = parentNode.position.y / REM_UNIT_HEIGHT_PX;
-  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed));
+  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed, attributeData, hiddenAttributes, kind));
   const totalUnits =
     heights.reduce((sum, h) => sum + h, 0) + Math.max(0, children.length - 1) * REM_CHILD_GAP_UNITS;
 
@@ -586,7 +607,10 @@ function layoutForestHorizontal(
   edges: GraphEdge[],
   existingNodeIds: Set<string>,
   collapsed: Set<string>,
-  nodePositions?: Map<string, { x: number; y: number }>
+  nodePositions?: Map<string, { x: number; y: number }>,
+  attributeData?: AttributeData,
+  hiddenAttributes?: Set<string>,
+  kind?: 'property' | 'interface'
 ): void {
   if (forest.length === 0) return;
   const heightCache = new Map<string, number>();
@@ -600,7 +624,10 @@ function layoutForestHorizontal(
     existingNodeIds,
     collapsed,
     nodePositions,
-    heightCache
+    heightCache,
+    attributeData,
+    hiddenAttributes,
+    kind
   );
 }
 
@@ -653,7 +680,10 @@ async function createGraphData(
     edges,
     existingIds,
     collapsed,
-    nodePositions
+    nodePositions,
+    attributeData,
+    hiddenAttributes,
+    kind
   );
 
   layoutForestHorizontal(
@@ -665,7 +695,10 @@ async function createGraphData(
     edges,
     existingIds,
     collapsed,
-    nodePositions
+    nodePositions,
+    attributeData,
+    hiddenAttributes,
+    kind
   );
 
   return integrateAttributeGraph(plugin, nodes, edges, attributeData, hiddenAttributes, collapsed, nodePositions, kind);
@@ -716,7 +749,7 @@ function layoutAttributeTree(
       posX = storedPos.x;
       posY = storedPos.y;
     }
-    const hasOutgoing = attributeData?.byId[info.id]?.hasOutgoing || false;
+    const hasOutgoing = false; //attributeData?.byId[info.id]?.hasOutgoing || false;
     const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
     const propStyle = hasOutgoing
       ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
@@ -726,7 +759,7 @@ function layoutAttributeTree(
       position: { x: posX, y: posY },
       data: { label: info.label, remId: info.id, kind, hasOutgoing },
       style: collapsed.has(info.id)
-        ? { ...propStyle, border: "1px solid #504e3eff" }
+        ? {... propStyle, background: "#f1de90ff" } //{ ...propStyle, border: "1px solid #504e3eff" }
         : propStyle,
       draggable: true,
       selectable: true,
@@ -806,13 +839,13 @@ function layoutAttributeDescendants(
       posY = storedPos.y;
     }
 
-    const hasOutgoing = attributeData?.byId[info.id]?.hasOutgoing || false;
+    const hasOutgoing = false; //attributeData?.byId[info.id]?.hasOutgoing || false;
     const attrStyle = kind === 'property' ? PROPERTY_NODE_STYLE : INTERFACE_NODE_STYLE;
     const baseStyle = hasOutgoing
       ? { ...attrStyle, background: "#e2e8f0", opacity: 0.5, width: attrWidth }
       : { ...attrStyle, width: attrWidth };
     const nodeStyle = collapsed.has(info.id)
-      ? { ...baseStyle, border: "1px solid #504e3eff" }
+      ? {... baseStyle, background: "#f1de90ff" } // { ...baseStyle, border: "1px solid #504e3eff" }
       : baseStyle;
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
@@ -868,6 +901,7 @@ function layoutAttributeDescendants(
         targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "smoothstep",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
       });
       existingEdgeIds.add(linkEdgeId);
     }
@@ -983,53 +1017,37 @@ async function integrateAttributeGraph(
   }
 
   for (const detail of Object.values(attributeData.byId)) {
-    if (hiddenAttributes?.has(detail.id)) {
-      continue;
-    }
-    const childNodeId = attributeNodeId(kind, detail.id);
-    if (!existingNodeIds.has(childNodeId)) {
-      continue;
-    }
-    for (const parentId of detail.extends) {
-      if (hiddenAttributes?.has(parentId)) {
+      // Always process every attribute, even if hidden, to ensure edges skip hidden nodes
+      const childNodeId = attributeNodeId(kind, detail.id);
+      // Only create edges if the child node is visible
+      if (!existingNodeIds.has(childNodeId)) {
         continue;
       }
-      const parentNodeId = attributeNodeId(kind, parentId);
-      if (!existingNodeIds.has(parentNodeId)) {
-        const visibleTargetId = await findClosestVisibleAncestor(parentId, existingNodeIds, kind);
-        if (visibleTargetId && visibleTargetId !== detail.id) {
-          const targetNodeId = attributeNodeId(kind, visibleTargetId);
-          const edgeId = `attr-ext:${visibleTargetId}->${detail.id}`;
+      for (const parentId of detail.extends) {
+        // Find the closest visible ancestor for the parentId
+        let visibleSourceId: string | null = parentId;
+        if (!existingNodeIds.has(attributeNodeId(kind, parentId)) || (hiddenAttributes?.has(parentId))) {
+          visibleSourceId = await findClosestVisibleAncestor(parentId, existingNodeIds, kind);
+        }
+        // Only create edge if the visible ancestor is not the child itself and exists
+        if (visibleSourceId && visibleSourceId !== detail.id) {
+          const sourceNodeId = attributeNodeId(kind, visibleSourceId);
+          const edgeId = `attr-ext:${visibleSourceId}->${detail.id}`;
           if (!existingEdgeIds.has(edgeId)) {
             edges.push({
               id: edgeId,
-              source: targetNodeId,
+              source: sourceNodeId,
               target: childNodeId,
-              sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
-              targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+              sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+              targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
               type: "smoothstep",
               markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+              style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
             });
             existingEdgeIds.add(edgeId);
           }
         }
-      } else {
-        const edgeId = `attr-ext:${parentId}->${detail.id}`;
-        if (existingEdgeIds.has(edgeId)) {
-          continue;
-        }
-        edges.push({
-          id: edgeId,
-          source: parentNodeId,
-          target: childNodeId,
-          sourceHandle: ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
-          targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
-          type: "smoothstep",
-          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-        });
-        existingEdgeIds.add(edgeId);
       }
-    }
   }
 
   return { nodes, edges };
@@ -1067,6 +1085,7 @@ async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: G
           targetHandle,
           type: "smoothstep",
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+          style: { stroke: getRandomColor() }
         });
       }
     }
@@ -1841,6 +1860,62 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [contextMenu, plugin, handleContextMenuClose]);
 
+  const collectAttributeIds = useCallback((attrs: AttributeNodeInfo[]): string[] => {
+    const ids: string[] = [];
+    for (const attr of attrs) {
+      ids.push(attr.id);
+      ids.push(...collectAttributeIds(attr.children));
+    }
+    return ids;
+  }, []);
+
+  const handleHideProperties = useCallback(async () => {
+    if (!contextMenu?.remId || !propertyData) return;
+    const attrs = propertyData.byOwner[contextMenu.remId];
+    if (!attrs) return;
+    const idsToToggle = collectAttributeIds(attrs);
+    const allHidden = idsToToggle.every(id => hiddenAttributes.has(id));
+    const nextHidden: Set<string> = new Set(hiddenAttributes);
+    if (allHidden) {
+      // Show them: remove from hidden
+      idsToToggle.forEach(id => nextHidden.delete(id));
+    } else {
+      // Hide them: add to hidden
+      idsToToggle.forEach(id => nextHidden.add(id));
+    }
+    const graph = await createGraphData(
+      plugin,
+      loadedRemId,
+      loadedRemName || "(Untitled Rem)",
+      ancestorTrees,
+      descendantTrees,
+      collapsedNodes,
+      propertyData,
+      nextHidden,
+      nodePositionsRef.current,
+      'property'
+    );
+    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    setHiddenAttributes(nextHidden);
+    setNodes(graph.nodes);
+    storePositions(graph.nodes);
+    setEdges(updatedEdges);
+    handleContextMenuClose();
+  }, [
+    contextMenu,
+    propertyData,
+    hiddenAttributes,
+    loadedRemId,
+    loadedRemName,
+    ancestorTrees,
+    descendantTrees,
+    collapsedNodes,
+    plugin,
+    storePositions,
+    collectAttributeIds,
+    handleContextMenuClose
+  ]);
+
   const handleGotoContextRem = useCallback(() => {
     if (!contextMenu?.remId) return;
 
@@ -1852,11 +1927,12 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [contextMenu, loadHierarchy, handleContextMenuClose]);
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     if (loadedRemId) {
-      loadHierarchy(loadedRemId);
+      nodePositionsRef.current = new Map();
+      await updateGraph();
     }
-  }, [loadedRemId, loadHierarchy]);
+  }, [loadedRemId, updateGraph]);
 
   const handleGoBack = useCallback(() => {
     if (historyStack.length === 0) return;
@@ -1979,7 +2055,7 @@ function MindmapWidget() {
           onClick={handleRefresh}
           disabled={!loadedRemId}
         >
-          Refresh
+          Reposition
         </button>
         <button
           style={{
@@ -2015,8 +2091,8 @@ function MindmapWidget() {
         {showPlaceholder ? (
           <div style={{ padding: 24, color: "#64748b" }}>
             {focusedRemId
-              ? "Press Refresh to load the inheritance hierarchy."
-              : "Focus a rem, then press Refresh to load the hierarchy."}
+              ? "Press Reposition to load the inheritance hierarchy."
+              : "Focus a rem, then press Reposition to load the hierarchy."}
           </div>
         ) : (
           <ReactFlowProvider>
@@ -2070,9 +2146,40 @@ function MindmapWidget() {
                 fontSize: 14,
                 color: '#374151',
               }}
+              onClick={handleGotoContextRem}
+            >
+              Open Rem
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+              }}
+              onClick={handleHideProperties}
+            >
+              Toggle Properties
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+                borderTop: '1px solid #e2e8f0',
+              }}
               onClick={handleOpenContextRem}
             >
-              Open Rem in Pane
+              Edit Rem
             </button>
             <button
               style={{
@@ -2088,22 +2195,6 @@ function MindmapWidget() {
               onClick={handleCopyContextRem}
             >
               Copy Rem
-            </button>
-            <button
-              style={{
-                padding: '8px 12px',
-                background: 'none',
-                border: 'none',
-                width: '100%',
-                textAlign: 'left',
-                cursor: 'pointer',
-                fontSize: 14,
-                color: '#374151',
-                borderTop: '1px solid #e2e8f0',
-              }}
-              onClick={handleGotoContextRem}
-            >
-              Go to Rem
             </button>
           </div>
         )}
