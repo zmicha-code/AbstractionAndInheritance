@@ -87,6 +87,18 @@ type AttributeData = {
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
 
+const MINDMAP_STATE_KEY = "mindmap_widget_state";
+
+type MindMapState = {
+  loadedRemId: string;
+  loadedRemName: string;
+  attributeType: 'property' | 'interface';
+  collapsedNodes: string[];
+  hiddenAttributes: string[];
+  nodePositions: Record<string, { x: number; y: number }>;
+  historyStack: string[];
+};
+
 const PROPERTY_NODE_STYLE: React.CSSProperties = {
   padding: "6px 10px",
   background: "#fefce8",
@@ -1191,6 +1203,32 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
   return { byOwner, byId };
 }
 
+async function saveMindMapState(
+  plugin: RNPlugin,
+  state: MindMapState
+): Promise<void> {
+  try {
+    await plugin.storage.setSynced(MINDMAP_STATE_KEY, state);
+  } catch (err) {
+    console.error("Failed to save mindmap state:", err);
+  }
+}
+
+async function loadMindMapState(
+  plugin: RNPlugin
+): Promise<MindMapState | null> {
+  try {
+    const state = await plugin.storage.getSynced(MINDMAP_STATE_KEY);
+    if (state && typeof state === "object" && "loadedRemId" in state) {
+      return state as MindMapState;
+    }
+    return null;
+  } catch (err) {
+    console.error("Failed to load mindmap state:", err);
+    return null;
+  }
+}
+
 function MindmapWidget() {
   const plugin = usePlugin();
 
@@ -1217,6 +1255,7 @@ function MindmapWidget() {
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
   const [parentMap, setParentMap] = useState<Map<string, string>>(new Map());
+  const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const hiddenAttributeOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map());
@@ -1231,6 +1270,151 @@ function MindmapWidget() {
   }, []);
 
   const focusedRemId = focusedRem?._id;
+
+  // Save state whenever key values change
+  useEffect(() => {
+    if (!isInitialized || !loadedRemId) return;
+
+    const nodePositionsObj: Record<string, { x: number; y: number }> = {};
+    nodePositionsRef.current.forEach((pos, id) => {
+      nodePositionsObj[id] = pos;
+    });
+
+    const stateToSave: MindMapState = {
+      loadedRemId,
+      loadedRemName,
+      attributeType,
+      collapsedNodes: Array.from(collapsedNodes),
+      hiddenAttributes: Array.from(hiddenAttributes),
+      nodePositions: nodePositionsObj,
+      historyStack,
+    };
+
+    saveMindMapState(plugin, stateToSave);
+  }, [
+    isInitialized,
+    loadedRemId,
+    loadedRemName,
+    attributeType,
+    collapsedNodes,
+    hiddenAttributes,
+    historyStack,
+    nodes,
+    plugin,
+  ]);
+
+  // Load saved state on mount
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreState() {
+      const savedState = await loadMindMapState(plugin);
+      if (cancelled) return;
+
+      if (savedState && savedState.loadedRemId) {
+        // Restore node positions
+        const positionsMap = new Map<string, { x: number; y: number }>();
+        if (savedState.nodePositions) {
+          Object.entries(savedState.nodePositions).forEach(([id, pos]) => {
+            positionsMap.set(id, pos);
+          });
+        }
+        nodePositionsRef.current = positionsMap;
+
+        // Set state values that don't depend on loading
+        setAttributeType(savedState.attributeType || 'property');
+        setHistoryStack(savedState.historyStack || []);
+
+        // Verify the rem still exists before trying to load
+        const rem = await plugin.rem.findOne(savedState.loadedRemId);
+        if (cancelled) return;
+
+        if (rem) {
+          // Load the hierarchy with the saved rem
+          setLoading(true);
+          setError(null);
+          try {
+            const visited = new Set<string>([rem._id]);
+            const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
+              getRemText(plugin, rem),
+              buildAncestorNodes(plugin, rem, visited),
+              buildDescendantNodes(plugin, rem, visited),
+            ]);
+
+            if (cancelled) return;
+
+            const centerLabel = name || "(Untitled Rem)";
+            const remsForAttributes = collectRemsForProperties(
+              rem,
+              ancestorTreesResult,
+              descendantTreesResult
+            );
+            const [properties, interfaces] = await Promise.all([
+              buildAttributeData(plugin, remsForAttributes, true),
+              buildAttributeData(plugin, remsForAttributes, false, rem._id),
+            ]);
+
+            if (cancelled) return;
+
+            setAncestorTrees(ancestorTreesResult);
+            setDescendantTrees(descendantTreesResult);
+            setDescendantOwnerMap(buildDescendantOwnerMap(descendantTreesResult));
+            setPropertyData(properties);
+            setInterfaceData(interfaces);
+            setLoadedRemId(rem._id);
+            setLoadedRemName(centerLabel);
+            
+            // Restore collapsed and hidden from saved state
+            setCollapsedNodes(new Set(savedState.collapsedNodes || []));
+            setHiddenAttributes(new Set(savedState.hiddenAttributes || []));
+
+            // Build parent map
+            const newParentMap = new Map<string, string>();
+            const buildRemParentMap = (forest: HierarchyNode[]) => {
+              const stack: { node: HierarchyNode; parent?: string }[] = forest.map((n) => ({ node: n }));
+              while (stack.length) {
+                const { node, parent } = stack.pop()!;
+                if (parent) newParentMap.set(node.id, parent);
+                node.children.forEach((child) => stack.push({ node: child, parent: node.id }));
+              }
+            };
+            buildRemParentMap(ancestorTreesResult);
+            buildRemParentMap(descendantTreesResult);
+
+            const buildAttrParentMap = (attrs: AttributeNodeInfo[], parentNodeId: string, kind: 'property' | 'interface') => {
+              attrs.forEach((p) => {
+                const attrNodeId = attributeNodeId(kind, p.id);
+                newParentMap.set(attrNodeId, parentNodeId);
+                buildAttrParentMap(p.children, attrNodeId, kind);
+              });
+            };
+            Object.entries(properties?.byOwner || {}).forEach(([ownerId, attrs]) => {
+              buildAttrParentMap(attrs, ownerId, 'property');
+            });
+            Object.entries(interfaces?.byOwner || {}).forEach(([ownerId, attrs]) => {
+              buildAttrParentMap(attrs, ownerId, 'interface');
+            });
+            setParentMap(newParentMap);
+          } catch (err) {
+            console.error("Error restoring mindmap state:", err);
+          } finally {
+            if (!cancelled) {
+              setLoading(false);
+            }
+          }
+        }
+      }
+
+      if (!cancelled) {
+        setIsInitialized(true);
+      }
+    }
+
+    restoreState();
+    return () => {
+      cancelled = true;
+    };
+  }, [plugin]);
 
   useEffect(() => {
     let cancelled = false;
