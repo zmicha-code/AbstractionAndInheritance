@@ -18,6 +18,7 @@ import "@xyflow/react/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType } from "@remnote/plugin-sdk";
 
 import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents } from "../utils/utils";
+import { EDGE_TYPES } from "../components/Edges";
 
 type HierarchyNode = {
   id: string;
@@ -536,7 +537,7 @@ function layoutSubtreeHorizontal(
       target: relation === "ancestor" ? parentId : node.id,
       sourceHandle,
       targetHandle,
-      type: "smoothstep",
+      type: "randomOffset",
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
       style: { stroke: getRandomColor() }
     });
@@ -788,7 +789,7 @@ function layoutAttributeTree(
         target: nodeId,
         sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
         targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
-        type: "smoothstep",
+        type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
       });
       existingEdgeIds.add(edgeId);
@@ -911,7 +912,7 @@ function layoutAttributeDescendants(
         target: nodeId,
         sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
         targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
-        type: "smoothstep",
+        type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
         style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
       });
@@ -1052,7 +1053,7 @@ async function integrateAttributeGraph(
               target: childNodeId,
               sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
               targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
-              type: "smoothstep",
+              type: "randomOffset",
               markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
               style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
             });
@@ -1095,7 +1096,7 @@ async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: G
           target: childId,
           sourceHandle,
           targetHandle,
-          type: "smoothstep",
+          type: "randomOffset",
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
           style: { stroke: getRandomColor() }
         });
@@ -1363,7 +1364,7 @@ function MindmapWidget() {
             setInterfaceData(interfaces);
             setLoadedRemId(rem._id);
             setLoadedRemName(centerLabel);
-            
+
             // Restore collapsed and hidden from saved state
             setCollapsedNodes(new Set(savedState.collapsedNodes || []));
             setHiddenAttributes(new Set(savedState.hiddenAttributes || []));
@@ -2284,6 +2285,7 @@ function MindmapWidget() {
               nodes={nodes}
               edges={edges}
               nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
               onInit={setReactFlowInstance}
               onNodeClick={handleNodeClick}
               onNodeContextMenu={handleNodeContextMenu}
