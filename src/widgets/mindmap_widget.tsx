@@ -15,9 +15,9 @@ import {
   NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType } from "@remnote/plugin-sdk";
+import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -40,14 +40,16 @@ type HierarchyNode = {
 type GraphNodeData = {
   label: string;
   remId: string;
-  kind: "rem" | "property" | "interface";
+  kind: "rem" | "property" | "interface" | "virtualProperty" | "virtualInterface";
+  sourcePropertyId?: string;  // For virtual nodes: the ancestor property this inherits from
+  ownerRemId?: string;        // For virtual nodes: the REM that should implement this
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
-const VERTICAL_SPACING = 35;
+const VERTICAL_SPACING = 150; // 35
 // Horizontal Space Between Ancestor and Descendant REM Nodes
 const REM_HORIZONTAL_SPACING = 110; // 220
-const REM_CHILD_GAP_UNITS = 1;
+const REM_CHILD_GAP_UNITS = 0.5;
 const REM_UNIT_HEIGHT_PX = VERTICAL_SPACING;
 const REM_NODE_HEIGHT_ESTIMATE = 46;
 const ATTRIBUTE_NODE_HEIGHT_ESTIMATE = 40;
@@ -56,7 +58,10 @@ const ATTRIBUTE_VERTICAL_MARGIN = 12; // 24
 // Horizontal Space Between Ancestor and Descendant Property Nodes
 const ATTRIBUTE_HORIZONTAL_SPACING = 47; // 160
 // Vertical Space Between Different Property Nodes of One REM Node
-const ATTRIBUTE_VERTICAL_SPACING = 55; // 55
+const ATTRIBUTE_VERTICAL_SPACING = 50; // 55
+// Factor to reduce attribute height contribution to subtree spacing (0 = ignore attributes, 1 = full height)
+const ATTRIBUTE_HEIGHT_SPACING_FACTOR = 1;
+const ATTRIBUTE_HEIGHT_SPACING_OFFSET = -1;
 
 // Node styles are now imported from ../components/Nodes
 
@@ -78,6 +83,17 @@ type AttributeData = {
   byId: Record<string, AttributeDetail>;
 };
 
+type VirtualAttributeInfo = {
+  id: string;                    // Unique virtual ID (e.g., "virtual:ownerRemId:sourcePropertyId")
+  label: string;                 // Same label as source property
+  sourcePropertyId: string;      // The ancestor property this inherits from
+  ownerRemId: string;            // The REM that should implement this
+};
+
+type VirtualAttributeData = {
+  byOwner: Record<string, VirtualAttributeInfo[]>;
+};
+
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
 
@@ -89,6 +105,7 @@ type MindMapState = {
   attributeType: 'property' | 'interface';
   collapsedNodes: string[];
   hiddenAttributes: string[];
+  hiddenVirtualAttributes: string[];
   nodePositions: Record<string, { x: number; y: number }>;
   historyStack: string[];
 };
@@ -172,7 +189,7 @@ function getRandomColor() {
   return "#" + Math.floor(Math.random()*16777215).toString(16);
 }
 
-function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface'): number {
+function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface'): number {
   const fontSize = kind === 'rem' ? 13 : 12;
   const avgCharWidth = fontSize * 0.6;
   const textWidth = label.length * avgCharWidth;
@@ -301,10 +318,38 @@ function InterfaceFlowNode({ data }: NodeProps<GraphNodeData>) {
   );
 }
 
+function VirtualPropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
+  return (
+    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }}>
+      <Handle
+        type="target"
+        position={Position.Top}
+        id={ATTRIBUTE_TARGET_TOP_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...TOP_HANDLE_STYLE }}
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={ATTRIBUTE_TARGET_LEFT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
+      />
+      <span style={{ width: '100%', fontStyle: 'italic' }}>⊕ {data.label}</span>
+    </div>
+  );
+}
+
 const NODE_TYPES = {
   remNode: RemFlowNode,
   propertyNode: PropertyFlowNode,
   interfaceNode: InterfaceFlowNode,
+  virtualPropertyNode: VirtualPropertyFlowNode,
+  virtualInterfaceNode: VirtualPropertyFlowNode,
 };
 
 async function buildAncestorNodes(
@@ -394,7 +439,9 @@ function measureSubtreeHeight(
   collapsed: Set<string>,
   attributeData?: AttributeData,
   hiddenAttributes?: Set<string>,
-  kind?: 'property' | 'interface'
+  kind?: 'property' | 'interface',
+  virtualAttributeData?: VirtualAttributeData,
+  hiddenVirtualAttributes?: Set<string>
 ): number {
   if (cache.has(node.id)) return cache.get(node.id)!;
   let baseHeight = 1;
@@ -404,7 +451,7 @@ function measureSubtreeHeight(
     let total = 0;
     for (let i = 0; i < node.children.length; i++) {
       const child = node.children[i];
-      const childHeight = measureSubtreeHeight(child, cache, collapsed, attributeData, hiddenAttributes, kind);
+      const childHeight = measureSubtreeHeight(child, cache, collapsed, attributeData, hiddenAttributes, kind, virtualAttributeData, hiddenVirtualAttributes);
       total += childHeight;
       if (i < node.children.length - 1) {
         total += REM_CHILD_GAP_UNITS;
@@ -418,7 +465,18 @@ function measureSubtreeHeight(
     const visible = hiddenAttributes ? attrs.filter(a => !hiddenAttributes.has(a.id)) : attrs;
     attributeHeight = visible.length * (ATTRIBUTE_VERTICAL_SPACING / REM_UNIT_HEIGHT_PX);
   }
-  const result = baseHeight + attributeHeight;
+  // Also count visible virtual attributes
+  let virtualAttributeHeight = 0;
+  if (virtualAttributeData && virtualAttributeData.byOwner[node.id]) {
+    const virtualAttrs = virtualAttributeData.byOwner[node.id];
+    const visibleVirtual = hiddenVirtualAttributes 
+      ? virtualAttrs.filter(v => !hiddenVirtualAttributes.has(v.id)) 
+      : virtualAttrs;
+    virtualAttributeHeight = visibleVirtual.length * (ATTRIBUTE_VERTICAL_SPACING / REM_UNIT_HEIGHT_PX);
+  }
+  // Apply reduction factor to attribute heights for tighter subtree spacing
+  const totalAttributeHeight = (attributeHeight + virtualAttributeHeight) * ATTRIBUTE_HEIGHT_SPACING_FACTOR + ATTRIBUTE_HEIGHT_SPACING_OFFSET;
+  const result = baseHeight + totalAttributeHeight;
   cache.set(node.id, result);
   return result;
 }
@@ -438,7 +496,12 @@ function layoutSubtreeHorizontal(
   existingNodeIds: Set<string>,
   heightCache: Map<string, number>,
   collapsed: Set<string>,
-  nodePositions?: Map<string, { x: number; y: number }>
+  nodePositions?: Map<string, { x: number; y: number }>,
+  attributeData?: AttributeData,
+  hiddenAttributes?: Set<string>,
+  kind?: 'property' | 'interface',
+  virtualAttributeData?: VirtualAttributeData,
+  hiddenVirtualAttributes?: Set<string>
 ): GraphNode | null {
   if (existingNodeIds.has(node.id)) {
     return nodes.find((n) => n.id === node.id) ?? null;
@@ -530,7 +593,12 @@ function layoutSubtreeHorizontal(
     existingNodeIds,
     collapsed,
     nodePositions,
-    heightCache
+    heightCache,
+    attributeData,
+    hiddenAttributes,
+    kind,
+    virtualAttributeData,
+    hiddenVirtualAttributes
   );
 
   return graphNode;
@@ -549,12 +617,14 @@ function layoutChildrenHorizontal(
   heightCache: Map<string, number> = new Map(),
   attributeData?: AttributeData,
   hiddenAttributes?: Set<string>,
-  kind?: 'property' | 'interface'
+  kind?: 'property' | 'interface',
+  virtualAttributeData?: VirtualAttributeData,
+  hiddenVirtualAttributes?: Set<string>
 ): void {
   if (children.length === 0) return;
 
   const parentUnit = parentNode.position.y / REM_UNIT_HEIGHT_PX;
-  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed, attributeData, hiddenAttributes, kind));
+  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed, attributeData, hiddenAttributes, kind, virtualAttributeData, hiddenVirtualAttributes));
   const totalUnits =
     heights.reduce((sum, h) => sum + h, 0) + Math.max(0, children.length - 1) * REM_CHILD_GAP_UNITS;
 
@@ -575,7 +645,12 @@ function layoutChildrenHorizontal(
       existingNodeIds,
       heightCache,
       collapsed,
-      nodePositions
+      nodePositions,
+      attributeData,
+      hiddenAttributes,
+      kind,
+      virtualAttributeData,
+      hiddenVirtualAttributes
     );
     currentUnit += childUnits;
     if (i < children.length - 1) {
@@ -596,7 +671,9 @@ function layoutForestHorizontal(
   nodePositions?: Map<string, { x: number; y: number }>,
   attributeData?: AttributeData,
   hiddenAttributes?: Set<string>,
-  kind?: 'property' | 'interface'
+  kind?: 'property' | 'interface',
+  virtualAttributeData?: VirtualAttributeData,
+  hiddenVirtualAttributes?: Set<string>
 ): void {
   if (forest.length === 0) return;
   const heightCache = new Map<string, number>();
@@ -613,7 +690,9 @@ function layoutForestHorizontal(
     heightCache,
     attributeData,
     hiddenAttributes,
-    kind
+    kind,
+    virtualAttributeData,
+    hiddenVirtualAttributes
   );
 }
 
@@ -638,6 +717,7 @@ async function createGraphData(
   collapsed: Set<string>,
   attributeData: AttributeData | undefined,
   hiddenAttributes: Set<string>,
+  hiddenVirtualAttributes: Set<string>,
   nodePositions: Map<string, { x: number; y: number }>,
   kind: 'property' | 'interface'
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
@@ -657,6 +737,69 @@ async function createGraphData(
   const edges: GraphEdge[] = [];
   const existingIds = new Set<string>([centerId]);
 
+  // Pre-compute virtual attribute data for height calculations
+  // We need to build childToParentsMap first
+  let virtualData: VirtualAttributeData | undefined;
+  if (attributeData) {
+    // Build a complete parent map for all REMs (ancestors AND descendants) by looking up their actual parents
+    const childToParentsMap: Record<string, Set<string>> = {};
+    
+    // Collect all REM refs from a forest (ancestors or descendants)
+    const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
+      const remRefs = new Map<string, PluginRem>();
+      const stack = [...forest];
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        if (node.remRef) {
+          remRefs.set(node.id, node.remRef);
+        }
+        if (node.children?.length) {
+          stack.push(...node.children);
+        }
+      }
+      return remRefs;
+    };
+    
+    const ancestorRemRefs = collectRemRefs(ancestors);
+    const descendantRemRefs = collectRemRefs(descendants);
+    
+    // Combine all REM refs (ancestors + descendants + center)
+    const allRemRefs = new Map<string, PluginRem>();
+    for (const [id, ref] of ancestorRemRefs) {
+      allRemRefs.set(id, ref);
+    }
+    for (const [id, ref] of descendantRemRefs) {
+      allRemRefs.set(id, ref);
+    }
+    
+    // For each ancestor REM, look up its actual parents using getParentClass
+    for (const [remId, remRef] of ancestorRemRefs) {
+      const parents = await getParentClass(plugin, remRef);
+      childToParentsMap[remId] = new Set(
+        parents
+          .filter(p => p && ancestorRemRefs.has(p._id))
+          .map(p => p._id)
+      );
+    }
+    
+    // Add center's parents (the root ancestor nodes)
+    childToParentsMap[centerId] = new Set(ancestors.map(a => a.id));
+    
+    // For each descendant REM, look up its actual parents using getParentClass
+    // This properly handles multiple inheritance via "extends"
+    for (const [remId, remRef] of descendantRemRefs) {
+      const parents = await getParentClass(plugin, remRef);
+      // Include parents that are either in ancestors, descendants, or the center
+      childToParentsMap[remId] = new Set(
+        parents
+          .filter(p => p && (ancestorRemRefs.has(p._id) || descendantRemRefs.has(p._id) || p._id === centerId))
+          .map(p => p._id)
+      );
+    }
+    
+    virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+  }
+
   layoutForestHorizontal(
     ancestors,
     centerGraphNode,
@@ -669,7 +812,9 @@ async function createGraphData(
     nodePositions,
     attributeData,
     hiddenAttributes,
-    kind
+    kind,
+    virtualData,
+    hiddenVirtualAttributes
   );
 
   layoutForestHorizontal(
@@ -684,10 +829,12 @@ async function createGraphData(
     nodePositions,
     attributeData,
     hiddenAttributes,
-    kind
+    kind,
+    virtualData,
+    hiddenVirtualAttributes
   );
 
-  return integrateAttributeGraph(plugin, nodes, edges, attributeData, hiddenAttributes, collapsed, nodePositions, kind);
+  return integrateAttributeGraph(plugin, nodes, edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants);
 }
 
 function attributeNodeId(kind: 'property' | 'interface', attributeId: string): string {
@@ -902,9 +1049,13 @@ async function integrateAttributeGraph(
   edges: GraphEdge[],
   attributeData?: AttributeData,
   hiddenAttributes?: Set<string>,
+  hiddenVirtualAttributes?: Set<string>,
   collapsed?: Set<string>,
   nodePositions?: Map<string, { x: number; y: number }>,
-  kind?: 'property' | 'interface'
+  kind?: 'property' | 'interface',
+  centerId?: string,
+  ancestors?: HierarchyNode[],
+  descendants?: HierarchyNode[]
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   if (!attributeData || !collapsed || !kind) {
     return { nodes, edges };
@@ -934,6 +1085,94 @@ async function integrateAttributeGraph(
       kind,
       nodePositions
     );
+  }
+
+  // Build and layout virtual (unimplemented) attributes
+  if (centerId && ancestors && descendants) {
+    // Build a complete parent map for all REMs (ancestors AND descendants) by looking up their actual parents
+    // This is needed because the HierarchyNode tree structure may be incomplete
+    // due to the visited set preventing nodes from appearing in multiple branches
+    const childToParentsMap: Record<string, Set<string>> = {};
+    
+    // Collect all REM refs from a forest (ancestors or descendants)
+    const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
+      const remRefs = new Map<string, PluginRem>();
+      const stack = [...forest];
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        if (node.remRef) {
+          remRefs.set(node.id, node.remRef);
+        }
+        if (node.children?.length) {
+          stack.push(...node.children);
+        }
+      }
+      return remRefs;
+    };
+    
+    const ancestorRemRefs = collectRemRefs(ancestors);
+    const descendantRemRefs = collectRemRefs(descendants);
+    
+    // For each ancestor REM, look up its actual parents using getParentClass
+    for (const [remId, remRef] of ancestorRemRefs) {
+      const parents = await getParentClass(plugin, remRef);
+      childToParentsMap[remId] = new Set(
+        parents
+          .filter(p => p && ancestorRemRefs.has(p._id))
+          .map(p => p._id)
+      );
+    }
+    
+    // Add center's parents (the root ancestor nodes)
+    childToParentsMap[centerId] = new Set(ancestors.map(a => a.id));
+    
+    // For each descendant REM, look up its actual parents using getParentClass
+    // This properly handles multiple inheritance via "extends"
+    for (const [remId, remRef] of descendantRemRefs) {
+      const parents = await getParentClass(plugin, remRef);
+      // Include parents that are either in ancestors, descendants, or the center
+      childToParentsMap[remId] = new Set(
+        parents
+          .filter(p => p && (ancestorRemRefs.has(p._id) || descendantRemRefs.has(p._id) || p._id === centerId))
+          .map(p => p._id)
+      );
+    }
+    
+    const virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+    
+    for (const [ownerId, virtualAttrs] of Object.entries(virtualData.byOwner)) {
+      const ownerNode = baseNodeMap.get(ownerId);
+      if (!ownerNode || virtualAttrs.length === 0) {
+        continue;
+      }
+      
+      // Filter out hidden virtual attributes
+      const visibleVirtualAttrs = hiddenVirtualAttributes
+        ? virtualAttrs.filter(v => !hiddenVirtualAttributes.has(v.id))
+        : virtualAttrs;
+      
+      if (visibleVirtualAttrs.length === 0) {
+        continue;
+      }
+      
+      // Count existing (non-hidden) attributes for this owner
+      const existingAttrs = attributeData.byOwner[ownerId] || [];
+      const visibleExistingCount = hiddenAttributes
+        ? existingAttrs.filter(a => !hiddenAttributes.has(a.id)).length
+        : existingAttrs.length;
+      
+      layoutVirtualAttributes(
+        ownerNode,
+        visibleVirtualAttrs,
+        visibleExistingCount,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        kind,
+        nodePositions
+      );
+    }
   }
 
   async function findClosestVisibleAncestor(attributeId: string, existingNodeIds: Set<string>, kind: 'property' | 'interface'): Promise<string | null> {
@@ -1157,6 +1396,282 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
   return { byOwner, byId };
 }
 
+function buildVirtualAttributeData(
+  attributeData: AttributeData,
+  centerId: string,
+  ancestors: HierarchyNode[],
+  descendants: HierarchyNode[],
+  kind: 'property' | 'interface',
+  childToParentsMap: Record<string, Set<string>>
+): VirtualAttributeData {
+  const byOwner: Record<string, VirtualAttributeInfo[]> = {};
+
+  // Build a map of which properties each REM implements (directly or via extends)
+  const implementedByOwner: Record<string, Set<string>> = {};
+  
+  // Helper to recursively collect all property IDs that a set of attributes "implements"
+  const collectImplementedIds = (attrs: AttributeNodeInfo[]): Set<string> => {
+    const result = new Set<string>();
+    for (const attr of attrs) {
+      result.add(attr.id);
+      // Also add all properties this extends from
+      for (const extId of attr.extends) {
+        result.add(extId);
+      }
+      // Recursively collect from children
+      const childIds = collectImplementedIds(attr.children);
+      childIds.forEach(id => result.add(id));
+    }
+    return result;
+  };
+
+  for (const [ownerId, attrs] of Object.entries(attributeData.byOwner)) {
+    implementedByOwner[ownerId] = collectImplementedIds(attrs);
+  }
+
+  // Build ancestor chain for ALL REMs (ancestors, center, and descendants)
+  const remAncestorMap: Record<string, string[]> = {};
+
+  // Helper to collect all IDs from a forest (flattened)
+  const collectAllIdsFromForest = (forest: HierarchyNode[]): string[] => {
+    const ids: string[] = [];
+    const stack = [...forest];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      ids.push(node.id);
+      if (node.children?.length) {
+        stack.push(...node.children);
+      }
+    }
+    return ids;
+  };
+
+  // Get ALL ancestor IDs (flattened from the entire forest)
+  const allAncestorIds = collectAllIdsFromForest(ancestors);
+
+  // Compute the TRANSITIVE ancestors for a given node using the pre-built parent map
+  // This correctly handles the DAG structure where nodes may have multiple parents
+  const computeTransitiveAncestors = (nodeId: string): Set<string> => {
+    const result = new Set<string>();
+    const visited = new Set<string>();
+    const stack = [...(childToParentsMap[nodeId] || [])];
+    
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      result.add(current);
+      
+      const parents = childToParentsMap[current];
+      if (parents) {
+        for (const parent of parents) {
+          if (!visited.has(parent)) {
+            stack.push(parent);
+          }
+        }
+      }
+    }
+    
+    return result;
+  };
+
+  // Build remAncestorMap for all ancestor REMs using transitive closure
+  for (const ancestorId of allAncestorIds) {
+    remAncestorMap[ancestorId] = [...computeTransitiveAncestors(ancestorId)];
+  }
+
+  // Center REM gets all its transitive ancestors
+  remAncestorMap[centerId] = [...computeTransitiveAncestors(centerId)];
+
+  // For each descendant, build the ancestor chain using the proper childToParentsMap
+  // This correctly handles multiple inheritance via "extends"
+  const allDescendantIds = collectAllIdsFromForest(descendants);
+  for (const descendantId of allDescendantIds) {
+    // Use computeTransitiveAncestors which properly follows all parent relationships
+    // including both structural parents and "extends" relationships
+    remAncestorMap[descendantId] = [...computeTransitiveAncestors(descendantId)];
+  }
+
+  // Now for each REM, find which ancestor properties are NOT implemented
+  // We need to only show the "closest" unimplemented property in the chain
+  // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
+  
+  // First, build a map of property extends relationships for quick lookup
+  const propertyExtendsMap: Record<string, string[]> = {};
+  for (const detail of Object.values(attributeData.byId)) {
+    propertyExtendsMap[detail.id] = detail.extends;
+  }
+  
+  // Helper to get all ancestors of a property (transitive)
+  const getPropertyAncestors = (propId: string): Set<string> => {
+    const ancestors = new Set<string>();
+    const stack = [...(propertyExtendsMap[propId] || [])];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (ancestors.has(current)) continue;
+      ancestors.add(current);
+      const parents = propertyExtendsMap[current] || [];
+      stack.push(...parents);
+    }
+    return ancestors;
+  };
+
+  for (const [remId, ancestorIds] of Object.entries(remAncestorMap)) {
+    const implemented = implementedByOwner[remId] || new Set<string>();
+    const candidateVirtualAttrs: VirtualAttributeInfo[] = [];
+
+    // First pass: collect all unimplemented properties as candidates
+    for (const ancestorId of ancestorIds) {
+      const ancestorProps = attributeData.byOwner[ancestorId] || [];
+      
+      // Only check top-level properties (documents under the ancestor), not their children
+      for (const prop of ancestorProps) {
+        // Check if this property (or something extending it) is implemented
+        if (!implemented.has(prop.id)) {
+          // Check if we already have a virtual node for this property on this REM
+          const existingVirtual = candidateVirtualAttrs.find(v => v.sourcePropertyId === prop.id);
+          if (!existingVirtual) {
+            candidateVirtualAttrs.push({
+              id: `virtual:${remId}:${prop.id}`,
+              label: prop.label,
+              sourcePropertyId: prop.id,
+              ownerRemId: remId,
+            });
+          }
+        }
+      }
+    }
+
+    // Second pass: filter out properties that are ancestors of other candidates
+    // (keep only the "closest" / most derived unimplemented property)
+    const candidatePropertyIds = new Set(candidateVirtualAttrs.map(v => v.sourcePropertyId));
+    const virtualAttrs = candidateVirtualAttrs.filter(candidate => {
+      // Check if any other candidate property extends from this one
+      for (const otherCandidate of candidateVirtualAttrs) {
+        if (otherCandidate.sourcePropertyId === candidate.sourcePropertyId) continue;
+        const otherAncestors = getPropertyAncestors(otherCandidate.sourcePropertyId);
+        if (otherAncestors.has(candidate.sourcePropertyId)) {
+          // This candidate is an ancestor of another candidate, so filter it out
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (virtualAttrs.length > 0) {
+      byOwner[remId] = virtualAttrs;
+    }
+  }
+
+  return { byOwner };
+}
+
+function layoutVirtualAttributes(
+  ownerNode: GraphNode,
+  virtualAttrs: VirtualAttributeInfo[],
+  existingAttrsCount: number,
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  existingNodeIds: Set<string>,
+  existingEdgeIds: Set<string>,
+  kind: 'property' | 'interface',
+  nodePositions?: Map<string, { x: number; y: number }>
+) {
+  if (virtualAttrs.length === 0) return;
+
+  const ownerData = ownerNode.data as GraphNodeData;
+  const ownerStyleWidth = ownerNode.style?.width;
+  const ownerWidth =
+    typeof ownerStyleWidth === "number"
+      ? ownerStyleWidth
+      : estimateNodeWidth(ownerData.label, ownerData.kind);
+  const ownerStyleHeight = ownerNode.style?.height;
+  const ownerHeight =
+    typeof ownerStyleHeight === "number"
+      ? ownerStyleHeight
+      : ownerData.kind === "rem"
+      ? REM_NODE_HEIGHT_ESTIMATE
+      : ATTRIBUTE_NODE_HEIGHT_ESTIMATE;
+
+  const baseY =
+    ownerNode.position.y +
+    ownerHeight +
+    ATTRIBUTE_VERTICAL_MARGIN +
+    existingAttrsCount * ATTRIBUTE_VERTICAL_SPACING;
+
+  const sorted = [...virtualAttrs].sort((a, b) => a.label.localeCompare(b.label));
+
+  sorted.forEach((info, index) => {
+    const nodeId = info.id;
+    if (existingNodeIds.has(nodeId)) return;
+
+    const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualInterface';
+    const attrWidth = estimateNodeWidth(info.label, virtualKind);
+    let posX = ownerNode.position.x + ownerWidth / 2 - attrWidth / 2;
+    let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
+
+    const storedPos = nodePositions?.get(nodeId);
+    if (storedPos) {
+      posX = storedPos.x;
+      posY = storedPos.y;
+    }
+
+    const nodeStyle = getNodeStyle(virtualKind, false, false, attrWidth);
+
+    nodes.push({
+      id: nodeId,
+      position: { x: posX, y: posY },
+      data: {
+        label: info.label,
+        remId: info.id,
+        kind: virtualKind,
+        sourcePropertyId: info.sourcePropertyId,
+        ownerRemId: info.ownerRemId,
+      },
+      style: nodeStyle,
+      draggable: true,
+      selectable: true,
+      type: `${virtualKind}Node`,
+    });
+    existingNodeIds.add(nodeId);
+
+    // Create edge from owner REM node to virtual property (like regular properties)
+    const ownerEdgeId = `vattr-link:${ownerNode.id}->${info.id}`;
+    if (!existingEdgeIds.has(ownerEdgeId)) {
+      edges.push({
+        id: ownerEdgeId,
+        source: ownerNode.id,
+        target: nodeId,
+        sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+        type: "randomOffset",
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        style: { stroke: "#9ca3af" }, // Grey line (no dash for owner connection)
+      });
+      existingEdgeIds.add(ownerEdgeId);
+    }
+
+    // Create edge from source property to virtual node (inheritance link)
+    // const sourceNodeId = attributeNodeId(kind, info.sourcePropertyId);
+    // if (existingNodeIds.has(sourceNodeId)) {
+    //   const edgeId = `virtual-link:${info.sourcePropertyId}->${info.id}`;
+    //   if (!existingEdgeIds.has(edgeId)) {
+    //     edges.push({
+    //       id: edgeId,
+    //       source: sourceNodeId,
+    //       target: nodeId,
+    //       sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+    //       targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+    //       type: "randomOffset",
+    //       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+    //       style: { stroke: "#9ca3af", strokeDasharray: "6 3" }, // Grey dashed line
+    //     });
+    //     existingEdgeIds.add(edgeId);
+    //   }
+    // }
+  });
+}
+
 async function saveMindMapState(
   plugin: RNPlugin,
   state: MindMapState
@@ -1202,12 +1717,14 @@ function MindmapWidget() {
   const [propertyData, setPropertyData] = useState<AttributeData | null>(null);
   const [interfaceData, setInterfaceData] = useState<AttributeData | null>(null);
   const [hiddenAttributes, setHiddenAttributes] = useState<Set<string>>(() => new Set<string>());
+  const [hiddenVirtualAttributes, setHiddenVirtualAttributes] = useState<Set<string>>(() => new Set<string>());
   const [attributeType, setAttributeType] = useState<'property' | 'interface'>('property');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
+  const [virtualContextMenu, setVirtualContextMenu] = useState<{ x: number; y: number; nodeId: string; label: string; sourcePropertyId: string; ownerRemId: string } | null>(null);
   const [parentMap, setParentMap] = useState<Map<string, string>>(new Map());
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
@@ -1240,6 +1757,7 @@ function MindmapWidget() {
       attributeType,
       collapsedNodes: Array.from(collapsedNodes),
       hiddenAttributes: Array.from(hiddenAttributes),
+      hiddenVirtualAttributes: Array.from(hiddenVirtualAttributes),
       nodePositions: nodePositionsObj,
       historyStack,
     };
@@ -1252,6 +1770,7 @@ function MindmapWidget() {
     attributeType,
     collapsedNodes,
     hiddenAttributes,
+    hiddenVirtualAttributes,
     historyStack,
     nodes,
     plugin,
@@ -1288,11 +1807,13 @@ function MindmapWidget() {
           setLoading(true);
           setError(null);
           try {
-            const visited = new Set<string>([rem._id]);
+            // Use separate visited sets to avoid race conditions between parallel builds
+            const visitedAncestors = new Set<string>([rem._id]);
+            const visitedDescendants = new Set<string>([rem._id]);
             const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
               getRemText(plugin, rem),
-              buildAncestorNodes(plugin, rem, visited),
-              buildDescendantNodes(plugin, rem, visited),
+              buildAncestorNodes(plugin, rem, visitedAncestors),
+              buildDescendantNodes(plugin, rem, visitedDescendants),
             ]);
 
             if (cancelled) return;
@@ -1321,6 +1842,7 @@ function MindmapWidget() {
             // Restore collapsed and hidden from saved state
             setCollapsedNodes(new Set(savedState.collapsedNodes || []));
             setHiddenAttributes(new Set(savedState.hiddenAttributes || []));
+            setHiddenVirtualAttributes(new Set(savedState.hiddenVirtualAttributes || []));
 
             // Build parent map
             const newParentMap = new Map<string, string>();
@@ -1404,14 +1926,31 @@ function MindmapWidget() {
       collapsedNodes,
       attrData ?? undefined,
       hiddenAttributes,
+      hiddenVirtualAttributes,
       nodePositionsRef.current,
       attributeType
     );
     const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    
+    // Update parentMap to include virtual property nodes
+    setParentMap((prevMap) => {
+      const newMap = new Map(prevMap);
+      for (const node of graph.nodes) {
+        const data = node.data as GraphNodeData;
+        if (data.kind === 'virtualProperty' || data.kind === 'virtualInterface') {
+          // Virtual properties are children of their ownerRemId
+          if (data.ownerRemId) {
+            newMap.set(node.id, data.ownerRemId);
+          }
+        }
+      }
+      return newMap;
+    });
+    
     setNodes(graph.nodes);
     storePositions(graph.nodes);
     setEdges(updatedEdges);
-  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, hiddenAttributes, plugin, storePositions, attributeType]);
+  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, hiddenAttributes, hiddenVirtualAttributes, plugin, storePositions, attributeType]);
 
   const loadHierarchy = useCallback(
     async (remId: string, ancestorsOnly?: boolean) => {
@@ -1420,6 +1959,7 @@ function MindmapWidget() {
       setPropertyData(null);
       setInterfaceData(null);
       setHiddenAttributes(new Set<string>());
+      setHiddenVirtualAttributes(new Set<string>());
       setEdges([]);
       try {
         const rem = await plugin.rem.findOne(remId);
@@ -1428,11 +1968,13 @@ function MindmapWidget() {
         }
 
         // 1.1 Collect Ancestors and Descendants
-        const visited = new Set<string>([rem._id]);
+        // Use separate visited sets to avoid race conditions between parallel builds
+        const visitedAncestors = new Set<string>([rem._id]);
+        const visitedDescendants = new Set<string>([rem._id]);
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
-          buildAncestorNodes(plugin, rem, visited),
-          ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visited),
+          buildAncestorNodes(plugin, rem, visitedAncestors),
+          ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visitedDescendants),
         ]);
 
         // 1.2 Collect Properties
@@ -1654,19 +2196,7 @@ function MindmapWidget() {
     loadHierarchy(focusedRemId);
   }, [focusedRemId, loadHierarchy]);
 
-  const handleLoadAncestors = useCallback(() => {
-    if (!focusedRemId) {
-      setError("Focus a rem before loading ancestors.");
-      return;
-    }
 
-    if (loadedRemId && loadedRemId !== focusedRemId) {
-      setHistoryStack((prev) => [...prev, loadedRemId]);
-    }
-
-    nodePositionsRef.current = new Map();
-    loadHierarchy(focusedRemId, true);
-  }, [focusedRemId, loadHierarchy]);
 
   const handleToggleAttributes = useCallback(async () => {
     if (!loadedRemId) {
@@ -1677,7 +2207,11 @@ function MindmapWidget() {
       return;
     }
     const oldHiddenSize = hiddenAttributes.size;
-    if (oldHiddenSize === 0) {
+    const oldHiddenVirtualSize = hiddenVirtualAttributes.size;
+    const allHidden = oldHiddenSize > 0 || oldHiddenVirtualSize > 0;
+    
+    if (!allHidden) {
+      // Store offsets for regular attributes before hiding
       nodes.forEach((node) => {
         const data = node.data as GraphNodeData;
         if (data?.kind === attributeType) {
@@ -1693,7 +2227,24 @@ function MindmapWidget() {
         }
       });
     }
-    const nextHidden = oldHiddenSize === 0 ? new Set(Object.keys(currentData.byId)) : new Set<string>();
+    
+    // Toggle regular attributes
+    const nextHidden = !allHidden ? new Set(Object.keys(currentData.byId)) : new Set<string>();
+    
+    // Toggle virtual attributes - collect all virtual attribute IDs from current nodes
+    const virtualKind = attributeType === 'property' ? 'virtualProperty' : 'virtualInterface';
+    const allVirtualIds = nodes
+      .filter(node => {
+        const data = node.data as GraphNodeData;
+        return data.kind === virtualKind;
+      })
+      .map(node => node.id);
+    
+    // Also include any already-hidden virtual IDs
+    const nextHiddenVirtual = !allHidden 
+      ? new Set([...allVirtualIds, ...hiddenVirtualAttributes])
+      : new Set<string>();
+    
     const graph = await createGraphData(
       plugin,
       loadedRemId,
@@ -1703,11 +2254,12 @@ function MindmapWidget() {
       collapsedNodes,
       currentData,
       nextHidden,
+      nextHiddenVirtual,
       nodePositionsRef.current,
       attributeType
     );
     let displayNodes = graph.nodes;
-    if (oldHiddenSize !== 0 && nextHidden.size === 0) {
+    if (allHidden && nextHidden.size === 0) {
       displayNodes = graph.nodes.map((node) => {
         const data = node.data as GraphNodeData;
         if (data.kind !== attributeType) {
@@ -1737,6 +2289,7 @@ function MindmapWidget() {
     }
     const updatedEdges = await addMissingRemEdges(plugin, displayNodes, graph.edges);
     setHiddenAttributes(nextHidden);
+    setHiddenVirtualAttributes(nextHiddenVirtual);
     setNodes(displayNodes);
     storePositions(displayNodes);
     setEdges(updatedEdges);
@@ -1745,6 +2298,7 @@ function MindmapWidget() {
     propertyData,
     interfaceData,
     hiddenAttributes,
+    hiddenVirtualAttributes,
     loadedRemId,
     loadedRemName,
     ancestorTrees,
@@ -1780,7 +2334,9 @@ function MindmapWidget() {
     const newType = attributeType === 'property' ? 'interface' : 'property';
     setAttributeType(newType);
     const nextHidden = new Set<string>();
+    const nextHiddenVirtual = new Set<string>();
     setHiddenAttributes(nextHidden);
+    setHiddenVirtualAttributes(nextHiddenVirtual);
     const newData = newType === 'property' ? propertyData : interfaceData;
     if (!newData) return;
     const graph = await createGraphData(
@@ -1792,6 +2348,7 @@ function MindmapWidget() {
       collapsedNodes,
       newData,
       nextHidden,
+      nextHiddenVirtual,
       nodePositionsRef.current,
       newType
     );
@@ -1843,11 +2400,16 @@ function MindmapWidget() {
   const handleToggleCollapseAll = useCallback(async () => {
     if (!loadedRemId) return;
 
-    const collectIds = (trees: HierarchyNode[]): string[] => {
+    // Only collect IDs of REM nodes that have children
+    const collectIdsWithChildren = (trees: HierarchyNode[]): string[] => {
       const ids: string[] = [];
       for (const node of trees) {
-        ids.push(node.id);
-        ids.push(...collectIds(node.children));
+        // Only add this node if it has children
+        if (node.children && node.children.length > 0) {
+          ids.push(node.id);
+        }
+        // Recursively check children
+        ids.push(...collectIdsWithChildren(node.children));
       }
       return ids;
     };
@@ -1855,13 +2417,13 @@ function MindmapWidget() {
     const currentData = attributeType === 'property' ? propertyData : interfaceData;
 
     if (collapsedNodes.size > 0) {
-      const next = new Set<string>();
-      setCollapsedNodes(next);
-      await updateGraph();
+      // Expand all: clear collapsed nodes
+      setCollapsedNodes(new Set<string>());
     } else {
+      // Collapse all: add only REM nodes that have children, and attribute nodes with children
       const allIds = new Set<string>([
-        ...collectIds(ancestorTrees),
-        ...collectIds(descendantTrees),
+        ...collectIdsWithChildren(ancestorTrees),
+        ...collectIdsWithChildren(descendantTrees),
       ]);
       if (currentData) {
         for (const detail of Object.values(currentData.byId)) {
@@ -1871,8 +2433,8 @@ function MindmapWidget() {
         }
       }
       setCollapsedNodes(allIds);
-      await updateGraph();
     }
+    // Note: updateGraph() is called automatically by the useEffect that depends on collapsedNodes
   }, [
     ancestorTrees,
     descendantTrees,
@@ -1881,7 +2443,6 @@ function MindmapWidget() {
     propertyData,
     interfaceData,
     attributeType,
-    updateGraph
   ]);
 
   const handleNodeClick = useCallback(
@@ -1978,6 +2539,7 @@ function MindmapWidget() {
 
   const handleContextMenuClose = useCallback(() => {
     setContextMenu(null);
+    setVirtualContextMenu(null);
   }, []);
 
   const handleOpenContextRem = useCallback(async () => {
@@ -1998,6 +2560,81 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [contextMenu, plugin, handleContextMenuClose]);
 
+  const handleImplementVirtualProperty = useCallback(async () => {
+    if (!virtualContextMenu) return;
+    
+    try {
+      // Get the owner REM and source property
+      const ownerRem = await plugin.rem.findOne(virtualContextMenu.ownerRemId);
+      const sourceProperty = await plugin.rem.findOne(virtualContextMenu.sourcePropertyId);
+      
+      if (!ownerRem || !sourceProperty) {
+        setError("Could not find required REMs");
+        handleContextMenuClose();
+        return;
+      }
+      
+      // Create new child REM with same name
+      const newRem = await plugin.rem.createRem();
+      if (!newRem) {
+        setError("Failed to create new REM");
+        handleContextMenuClose();
+        return;
+      }
+      
+      // Set the text to match the source property
+      const sourceText = sourceProperty.text;
+      if (sourceText) {
+        await newRem.setText(sourceText);
+      }
+      
+      // Set parent to owner REM
+      await newRem.setParent(ownerRem);
+      
+      // Make it a document (property)
+      await newRem.setIsDocument(true);
+      
+      // Create extends relationship to source property
+      // This requires creating an "extends" descriptor child
+      const extendsDesc = await plugin.rem.createRem();
+      if (extendsDesc) {
+        await extendsDesc.setText(["extends"]);
+        await extendsDesc.setParent(newRem);
+        await extendsDesc.setType(SetRemType.DESCRIPTOR);
+        
+        // Add reference to source property
+        const refChild = await plugin.rem.createRem();
+        if (refChild) {
+          await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
+          await refChild.setParent(extendsDesc);
+        }
+      }
+      
+      // Update descendant properties that extend the same source property
+      // to now extend this newly created property instead.
+      // This ensures the inheritance chain is properly maintained regardless
+      // of the order in which properties are implemented.
+      const updatedCount = await updateDescendantPropertyReferences(plugin, newRem, ownerRem, sourceProperty);
+      
+      // Show toast message if any descendant properties were updated
+      if (updatedCount > 0) {
+        await plugin.app.toast(
+          `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'property' : 'properties'} to extend the new property.`
+        );
+      }
+      
+      // Reload the hierarchy to reflect changes
+      if (loadedRemId) {
+        await loadHierarchy(loadedRemId);
+      }
+    } catch (err) {
+      console.error("Failed to create implementing property:", err);
+      setError("Failed to create property");
+    }
+    
+    handleContextMenuClose();
+  }, [virtualContextMenu, plugin, loadHierarchy, loadedRemId, handleContextMenuClose]);
+
   const collectAttributeIds = useCallback((attrs: AttributeNodeInfo[]): string[] => {
     const ids: string[] = [];
     for (const attr of attrs) {
@@ -2007,19 +2644,47 @@ function MindmapWidget() {
     return ids;
   }, []);
 
+  // Collect virtual attribute IDs for a given REM from the current nodes (for hiding)
+  const collectVirtualAttributeIdsFromNodes = useCallback((remId: string): string[] => {
+    return nodes
+      .filter(node => {
+        const data = node.data as GraphNodeData;
+        return (data.kind === 'virtualProperty' || data.kind === 'virtualInterface') && data.ownerRemId === remId;
+      })
+      .map(node => node.id);
+  }, [nodes]);
+
+  // Collect hidden virtual attribute IDs for a given REM from hiddenVirtualAttributes set (for showing)
+  const collectHiddenVirtualAttributeIds = useCallback((remId: string): string[] => {
+    const prefix = `virtual:${remId}:`;
+    return [...hiddenVirtualAttributes].filter(id => id.startsWith(prefix));
+  }, [hiddenVirtualAttributes]);
+
   const handleHideProperties = useCallback(async () => {
     if (!contextMenu?.remId || !propertyData) return;
     const attrs = propertyData.byOwner[contextMenu.remId];
-    if (!attrs) return;
-    const idsToToggle = collectAttributeIds(attrs);
-    const allHidden = idsToToggle.every(id => hiddenAttributes.has(id));
+    const idsToToggle = attrs ? collectAttributeIds(attrs) : [];
+    
+    // Collect virtual property IDs - from nodes if visible, from hiddenVirtualAttributes if hidden
+    const visibleVirtualIds = collectVirtualAttributeIdsFromNodes(contextMenu.remId);
+    const hiddenVirtualIds = collectHiddenVirtualAttributeIds(contextMenu.remId);
+    const allVirtualIds = [...new Set([...visibleVirtualIds, ...hiddenVirtualIds])];
+    
+    const allRegularHidden = idsToToggle.length === 0 || idsToToggle.every(id => hiddenAttributes.has(id));
+    const allVirtualHidden = allVirtualIds.length === 0 || allVirtualIds.every(id => hiddenVirtualAttributes.has(id));
+    const allHidden = allRegularHidden && allVirtualHidden;
+    
     const nextHidden: Set<string> = new Set(hiddenAttributes);
+    const nextHiddenVirtual: Set<string> = new Set(hiddenVirtualAttributes);
+    
     if (allHidden) {
       // Show them: remove from hidden
       idsToToggle.forEach(id => nextHidden.delete(id));
+      allVirtualIds.forEach(id => nextHiddenVirtual.delete(id));
     } else {
       // Hide them: add to hidden
       idsToToggle.forEach(id => nextHidden.add(id));
+      allVirtualIds.forEach(id => nextHiddenVirtual.add(id));
     }
     const graph = await createGraphData(
       plugin,
@@ -2030,11 +2695,13 @@ function MindmapWidget() {
       collapsedNodes,
       propertyData,
       nextHidden,
+      nextHiddenVirtual,
       nodePositionsRef.current,
       'property'
     );
     const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
     setHiddenAttributes(nextHidden);
+    setHiddenVirtualAttributes(nextHiddenVirtual);
     setNodes(graph.nodes);
     storePositions(graph.nodes);
     setEdges(updatedEdges);
@@ -2043,6 +2710,7 @@ function MindmapWidget() {
     contextMenu,
     propertyData,
     hiddenAttributes,
+    hiddenVirtualAttributes,
     loadedRemId,
     loadedRemName,
     ancestorTrees,
@@ -2051,6 +2719,67 @@ function MindmapWidget() {
     plugin,
     storePositions,
     collectAttributeIds,
+    collectVirtualAttributeIdsFromNodes,
+    collectHiddenVirtualAttributeIds,
+    handleContextMenuClose
+  ]);
+
+  const handleHideVirtualProperties = useCallback(async () => {
+    if (!contextMenu?.remId || !propertyData) return;
+    
+    // Collect virtual property IDs - from nodes if visible, from hiddenVirtualAttributes if hidden
+    const visibleVirtualIds = collectVirtualAttributeIdsFromNodes(contextMenu.remId);
+    const hiddenVirtualIds = collectHiddenVirtualAttributeIds(contextMenu.remId);
+    const allVirtualIds = [...new Set([...visibleVirtualIds, ...hiddenVirtualIds])];
+    
+    if (allVirtualIds.length === 0) {
+      handleContextMenuClose();
+      return;
+    }
+    
+    const allHidden = allVirtualIds.every(id => hiddenVirtualAttributes.has(id));
+    const nextHiddenVirtual: Set<string> = new Set(hiddenVirtualAttributes);
+    
+    if (allHidden) {
+      // Show them: remove from hidden
+      allVirtualIds.forEach(id => nextHiddenVirtual.delete(id));
+    } else {
+      // Hide them: add to hidden
+      allVirtualIds.forEach(id => nextHiddenVirtual.add(id));
+    }
+    const graph = await createGraphData(
+      plugin,
+      loadedRemId,
+      loadedRemName || "(Untitled Rem)",
+      ancestorTrees,
+      descendantTrees,
+      collapsedNodes,
+      propertyData,
+      hiddenAttributes,
+      nextHiddenVirtual,
+      nodePositionsRef.current,
+      'property'
+    );
+    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    setHiddenVirtualAttributes(nextHiddenVirtual);
+    setNodes(graph.nodes);
+    storePositions(graph.nodes);
+    setEdges(updatedEdges);
+    handleContextMenuClose();
+  }, [
+    contextMenu,
+    propertyData,
+    hiddenAttributes,
+    hiddenVirtualAttributes,
+    loadedRemId,
+    loadedRemName,
+    ancestorTrees,
+    descendantTrees,
+    collapsedNodes,
+    plugin,
+    storePositions,
+    collectVirtualAttributeIdsFromNodes,
+    collectHiddenVirtualAttributeIds,
     handleContextMenuClose
   ]);
 
@@ -2086,10 +2815,27 @@ function MindmapWidget() {
       event.preventDefault();
       event.stopPropagation();
       const nodeData = (node.data ?? undefined) as GraphNodeData | undefined;
-      const remId = nodeData?.remId ?? node.id;
+      if (!nodeData) return;
+
+      const label = (nodeData.label ?? "").trim();
+
+      // Check if this is a virtual property/interface node
+      if ((nodeData.kind === 'virtualProperty' || nodeData.kind === 'virtualInterface') && nodeData.sourcePropertyId && nodeData.ownerRemId) {
+        setVirtualContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          nodeId: node.id,
+          label: label.length > 0 ? label : '(Untitled)',
+          sourcePropertyId: nodeData.sourcePropertyId,
+          ownerRemId: nodeData.ownerRemId,
+        });
+        return;
+      }
+
+      // Regular node context menu
+      const remId = nodeData.remId ?? node.id;
       if (!remId) return;
 
-      const label = (nodeData?.label ?? "").trim();
       setContextMenu({
         x: event.clientX,
         y: event.clientY,
@@ -2120,21 +2866,7 @@ function MindmapWidget() {
         >
           {loading ? "Refreshing..." : "Load Current Rem"}
         </button>
-        <button
-          style={{
-            padding: "6px 12px",
-            background: !focusedRemId || loading ? "#cbd5f5" : "#2563eb",
-            color: !focusedRemId || loading ? "#475569" : "#ffffff",
-            border: "none",
-            borderRadius: 4,
-            cursor: !focusedRemId || loading ? "not-allowed" : "pointer",
-            fontWeight: 600,
-          }}
-          onClick={handleLoadAncestors}
-          disabled={!focusedRemId || loading}
-        >
-          {loading ? "Refreshing..." : "Load Current Rem (Ancestors)"}
-        </button>
+
         <button
           style={{
             padding: '6px 12px',
@@ -2314,6 +3046,21 @@ function MindmapWidget() {
                 cursor: 'pointer',
                 fontSize: 14,
                 color: '#374151',
+              }}
+              onClick={handleHideVirtualProperties}
+            >
+              Toggle Virtual Properties
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
                 borderTop: '1px solid #e2e8f0',
               }}
               onClick={handleOpenContextRem}
@@ -2334,6 +3081,38 @@ function MindmapWidget() {
               onClick={handleCopyContextRem}
             >
               Copy Rem
+            </button>
+          </div>
+        )}
+        {virtualContextMenu && (
+          <div
+            style={{
+              position: 'fixed',
+              left: virtualContextMenu.x,
+              top: virtualContextMenu.y,
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 4,
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+              zIndex: 1000,
+              minWidth: 160,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+              }}
+              onClick={handleImplementVirtualProperty}
+            >
+              Implement
             </button>
           </div>
         )}

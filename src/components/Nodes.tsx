@@ -63,9 +63,30 @@ export const INTERFACE_NODE_STYLE_COLLAPSED: React.CSSProperties = {
   background: "#a7f3d0",
 };
 
+// Virtual (Unimplemented) Property Node Styles - Greyed out
+export const VIRTUAL_PROPERTY_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#e5e5e5",
+  border: "1px dashed #9ca3af",
+  fontSize: 12,
+  minWidth: 160,
+  opacity: 0.7,
+  fontStyle: "italic",
+};
+
+export const VIRTUAL_INTERFACE_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#e5e5e5",
+  border: "1px dashed #6b7280",
+  fontSize: 12,
+  minWidth: 160,
+  opacity: 0.7,
+  fontStyle: "italic",
+};
+
 // Helper to get the appropriate style with optional width
 export function getNodeStyle(
-  kind: 'rem' | 'property' | 'interface',
+  kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface',
   isCollapsed: boolean,
   isCenter: boolean = false,
   width?: number
@@ -80,8 +101,12 @@ export function getNodeStyle(
     }
   } else if (kind === 'property') {
     style = isCollapsed ? PROPERTY_NODE_STYLE_COLLAPSED : PROPERTY_NODE_STYLE;
-  } else {
+  } else if (kind === 'interface') {
     style = isCollapsed ? INTERFACE_NODE_STYLE_COLLAPSED : INTERFACE_NODE_STYLE;
+  } else if (kind === 'virtualProperty') {
+    style = VIRTUAL_PROPERTY_NODE_STYLE;
+  } else {
+    style = VIRTUAL_INTERFACE_NODE_STYLE;
   }
   
   return width ? { ...style, width } : style;

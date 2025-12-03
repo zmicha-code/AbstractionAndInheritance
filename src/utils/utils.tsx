@@ -2464,6 +2464,145 @@ export async function getLayers2(plugin: RNPlugin, rem: Rem, interfaceLayers = t
   return result;
 }
 
+/**
+ * After implementing a property in a REM, updates any descendant properties
+ * that extend the same ancestor property to instead extend the newly created property.
+ * 
+ * Example: If RemA has PropertyA, and RemC.PropertyA extends RemA.PropertyA,
+ * when we implement PropertyA in RemB (between RemA and RemC), we need to update
+ * RemC.PropertyA to extend RemB.PropertyA instead.
+ * 
+ * @param plugin - The RNPlugin instance
+ * @param newProperty - The newly created property REM
+ * @param ownerRem - The REM that owns the new property
+ * @param sourceProperty - The ancestor property that the new property extends
+ */
+export async function updateDescendantPropertyReferences(
+  plugin: RNPlugin,
+  newProperty: Rem,
+  ownerRem: Rem,
+  sourceProperty: Rem
+): Promise<number> {
+  let updatedCount = 0;
+  
+  // Find all REMs that extend the ownerRem (descendants in the class hierarchy)
+  const extendsDescendants = await getExtendsChildren(plugin, ownerRem);
+  
+  // Also include structural children that might have extends relationships
+  const structuralChildren = await ownerRem.getChildrenRem();
+  const allDescendants = [...extendsDescendants];
+  for (const child of structuralChildren) {
+    const isDoc = await child.isDocument();
+    const type = await child.getType();
+    if (!isDoc && type !== RemType.DESCRIPTOR && !allDescendants.some(d => d._id === child._id)) {
+      allDescendants.push(child);
+    }
+  }
+  
+  // For each descendant, check if it has a property that extends the same sourceProperty
+  for (const descendant of allDescendants) {
+    updatedCount += await updatePropertyReferencesInRem(plugin, descendant, newProperty, sourceProperty);
+    
+    // Recursively check descendants of descendants
+    updatedCount += await updateDescendantPropertyReferencesRecursive(plugin, descendant, newProperty, sourceProperty, new Set([ownerRem._id]));
+  }
+  
+  return updatedCount;
+}
+
+async function updateDescendantPropertyReferencesRecursive(
+  plugin: RNPlugin,
+  currentRem: Rem,
+  newProperty: Rem,
+  sourceProperty: Rem,
+  visited: Set<string>
+): Promise<number> {
+  if (visited.has(currentRem._id)) return 0;
+  visited.add(currentRem._id);
+
+  let updatedCount = 0;
+  const extendsDescendants = await getExtendsChildren(plugin, currentRem);
+  const structuralChildren = await currentRem.getChildrenRem();
+  
+  const allDescendants = [...extendsDescendants];
+  for (const child of structuralChildren) {
+    const isDoc = await child.isDocument();
+    const type = await child.getType();
+    if (!isDoc && type !== RemType.DESCRIPTOR && !allDescendants.some(d => d._id === child._id)) {
+      allDescendants.push(child);
+    }
+  }
+  
+  for (const descendant of allDescendants) {
+    updatedCount += await updatePropertyReferencesInRem(plugin, descendant, newProperty, sourceProperty);
+    updatedCount += await updateDescendantPropertyReferencesRecursive(plugin, descendant, newProperty, sourceProperty, visited);
+  }
+  
+  return updatedCount;
+}
+
+/**
+ * Checks a specific REM for properties that extend sourceProperty and updates them
+ * to extend newProperty instead.
+ * @returns The number of properties that were updated
+ */
+async function updatePropertyReferencesInRem(
+  plugin: RNPlugin,
+  rem: Rem,
+  newProperty: Rem,
+  sourceProperty: Rem
+): Promise<number> {
+  let updatedCount = 0;
+  const children = await rem.getChildrenRem();
+  
+  for (const child of children) {
+    const isDoc = await child.isDocument();
+    if (!isDoc) continue;
+    
+    // Check if this property extends the sourceProperty
+    const extendsParents = await getExtendsParents(plugin, child);
+    const extendsSource = extendsParents.some(p => p._id === sourceProperty._id);
+    
+    if (extendsSource) {
+      // This property extends the source - update it to extend the new property instead
+      const wasUpdated = await replaceExtendsReference(plugin, child, sourceProperty._id, newProperty._id);
+      if (wasUpdated) updatedCount++;
+    }
+  }
+  
+  return updatedCount;
+}
+
+/**
+ * Replaces a reference in the "extends" descriptor from oldRefId to newRefId
+ * @returns true if a replacement was made, false otherwise
+ */
+async function replaceExtendsReference(
+  plugin: RNPlugin,
+  property: Rem,
+  oldRefId: string,
+  newRefId: string
+): Promise<boolean> {
+  const extendsDesc = await getExtendsDescriptor(plugin, property);
+  if (!extendsDesc) return false;
+  
+  const extChildren = await extendsDesc.getChildrenRem();
+  let replaced = false;
+  
+  for (const child of extChildren) {
+    const refs = await child.remsBeingReferenced();
+    const hasOldRef = refs.some((r: Rem) => r._id === oldRefId);
+    
+    if (hasOldRef) {
+      // Replace the text of this child to reference the new property instead
+      await child.setText([{ i: "q", _id: newRefId }]);
+      replaced = true;
+    }
+  }
+  
+  return replaced;
+}
+
 
 
 
