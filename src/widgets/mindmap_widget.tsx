@@ -1406,17 +1406,42 @@ function buildVirtualAttributeData(
 ): VirtualAttributeData {
   const byOwner: Record<string, VirtualAttributeInfo[]> = {};
 
+  // First, build a map of property extends relationships for quick lookup
+  // (moved up so we can use it in collectImplementedIds for transitive lookup)
+  const propertyExtendsMap: Record<string, string[]> = {};
+  for (const detail of Object.values(attributeData.byId)) {
+    propertyExtendsMap[detail.id] = detail.extends;
+  }
+  
+  // Helper to get all ancestors of a property (transitive)
+  const getPropertyAncestors = (propId: string): Set<string> => {
+    const ancestors = new Set<string>();
+    const stack = [...(propertyExtendsMap[propId] || [])];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (ancestors.has(current)) continue;
+      ancestors.add(current);
+      const parents = propertyExtendsMap[current] || [];
+      stack.push(...parents);
+    }
+    return ancestors;
+  };
+
   // Build a map of which properties each REM implements (directly or via extends)
   const implementedByOwner: Record<string, Set<string>> = {};
   
   // Helper to recursively collect all property IDs that a set of attributes "implements"
+  // This now includes transitive ancestors of extended properties
   const collectImplementedIds = (attrs: AttributeNodeInfo[]): Set<string> => {
     const result = new Set<string>();
     for (const attr of attrs) {
       result.add(attr.id);
-      // Also add all properties this extends from
+      // Also add all properties this extends from (including transitive ancestors)
       for (const extId of attr.extends) {
         result.add(extId);
+        // Add transitive ancestors of extended properties
+        const transitiveAncestors = getPropertyAncestors(extId);
+        transitiveAncestors.forEach(id => result.add(id));
       }
       // Recursively collect from children
       const childIds = collectImplementedIds(attr.children);
@@ -1495,26 +1520,6 @@ function buildVirtualAttributeData(
   // Now for each REM, find which ancestor properties are NOT implemented
   // We need to only show the "closest" unimplemented property in the chain
   // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
-  
-  // First, build a map of property extends relationships for quick lookup
-  const propertyExtendsMap: Record<string, string[]> = {};
-  for (const detail of Object.values(attributeData.byId)) {
-    propertyExtendsMap[detail.id] = detail.extends;
-  }
-  
-  // Helper to get all ancestors of a property (transitive)
-  const getPropertyAncestors = (propId: string): Set<string> => {
-    const ancestors = new Set<string>();
-    const stack = [...(propertyExtendsMap[propId] || [])];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (ancestors.has(current)) continue;
-      ancestors.add(current);
-      const parents = propertyExtendsMap[current] || [];
-      stack.push(...parents);
-    }
-    return ancestors;
-  };
 
   for (const [remId, ancestorIds] of Object.entries(remAncestorMap)) {
     const implemented = implementedByOwner[remId] || new Set<string>();
