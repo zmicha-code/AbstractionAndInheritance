@@ -1725,6 +1725,7 @@ function MindmapWidget() {
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
   const [virtualContextMenu, setVirtualContextMenu] = useState<{ x: number; y: number; nodeId: string; label: string; sourcePropertyId: string; ownerRemId: string } | null>(null);
+  const [paneContextMenu, setPaneContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [parentMap, setParentMap] = useState<Map<string, string>>(new Map());
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
 
@@ -2540,6 +2541,7 @@ function MindmapWidget() {
   const handleContextMenuClose = useCallback(() => {
     setContextMenu(null);
     setVirtualContextMenu(null);
+    setPaneContextMenu(null);
   }, []);
 
   const handleOpenContextRem = useCallback(async () => {
@@ -2564,6 +2566,11 @@ function MindmapWidget() {
     if (!virtualContextMenu) return;
     
     try {
+      // Determine if this is a property or interface based on the clicked node
+      const clickedNode = nodes.find(n => n.id === virtualContextMenu.nodeId);
+      const nodeData = clickedNode?.data as GraphNodeData | undefined;
+      const isProperty = nodeData?.kind === 'virtualProperty';
+      
       // Get the owner REM and source property
       const ownerRem = await plugin.rem.findOne(virtualContextMenu.ownerRemId);
       const sourceProperty = await plugin.rem.findOne(virtualContextMenu.sourcePropertyId);
@@ -2591,8 +2598,10 @@ function MindmapWidget() {
       // Set parent to owner REM
       await newRem.setParent(ownerRem);
       
-      // Make it a document (property)
-      await newRem.setIsDocument(true);
+      // Only make it a document for properties, not interfaces
+      if (isProperty) {
+        await newRem.setIsDocument(true);
+      }
       
       // Create extends relationship to source property
       // This requires creating an "extends" descriptor child
@@ -2633,7 +2642,7 @@ function MindmapWidget() {
     }
     
     handleContextMenuClose();
-  }, [virtualContextMenu, plugin, loadHierarchy, loadedRemId, handleContextMenuClose]);
+  }, [virtualContextMenu, plugin, loadHierarchy, loadedRemId, handleContextMenuClose, nodes]);
 
   const collectAttributeIds = useCallback((attrs: AttributeNodeInfo[]): string[] => {
     const ids: string[] = [];
@@ -2846,6 +2855,191 @@ function MindmapWidget() {
     []
   );
 
+  // Helper to escape XML special characters
+  const escapeXml = useCallback((str: string): string => {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }, []);
+
+  // Convert the tree structure to XML format
+  const treeToXml = useCallback((): string => {
+    if (!loadedRemId || !loadedRemName) return '';
+
+    const currentAttrData = attributeType === 'property' ? propertyData : interfaceData;
+
+    // Helper to convert HierarchyNode to XML
+    const hierarchyNodeToXml = (node: HierarchyNode, indent: string): string => {
+      const escapedName = escapeXml(node.name);
+      const attrs = currentAttrData?.byOwner[node.id] || [];
+      const hasContent = node.children.length > 0 || attrs.length > 0;
+
+      if (!hasContent) {
+        return `${indent}<rem id="${escapeXml(node.id)}" name="${escapedName}" />\n`;
+      }
+
+      let xml = `${indent}<rem id="${escapeXml(node.id)}" name="${escapedName}">\n`;
+
+      // Add attributes/properties
+      if (attrs.length > 0) {
+        xml += `${indent}  <${attributeType}s>\n`;
+        for (const attr of attrs) {
+          xml += attributeNodeToXml(attr, indent + '    ');
+        }
+        xml += `${indent}  </${attributeType}s>\n`;
+      }
+
+      // Add children
+      if (node.children.length > 0) {
+        xml += `${indent}  <children>\n`;
+        for (const child of node.children) {
+          xml += hierarchyNodeToXml(child, indent + '    ');
+        }
+        xml += `${indent}  </children>\n`;
+      }
+
+      xml += `${indent}</rem>\n`;
+      return xml;
+    };
+
+    // Helper to convert AttributeNodeInfo to XML
+    const attributeNodeToXml = (attr: AttributeNodeInfo, indent: string): string => {
+      const escapedLabel = escapeXml(attr.label);
+      const hasContent = attr.children.length > 0 || attr.extends.length > 0;
+
+      if (!hasContent) {
+        return `${indent}<${attributeType} id="${escapeXml(attr.id)}" name="${escapedLabel}" />\n`;
+      }
+
+      let xml = `${indent}<${attributeType} id="${escapeXml(attr.id)}" name="${escapedLabel}">\n`;
+
+      if (attr.extends.length > 0) {
+        xml += `${indent}  <extends>\n`;
+        for (const extId of attr.extends) {
+          xml += `${indent}    <ref id="${escapeXml(extId)}" />\n`;
+        }
+        xml += `${indent}  </extends>\n`;
+      }
+
+      if (attr.children.length > 0) {
+        xml += `${indent}  <children>\n`;
+        for (const child of attr.children) {
+          xml += attributeNodeToXml(child, indent + '    ');
+        }
+        xml += `${indent}  </children>\n`;
+      }
+
+      xml += `${indent}</${attributeType}>\n`;
+      return xml;
+    };
+
+    // Build the XML structure
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<mindmap>\n';
+
+    // Add center node
+    const centerAttrs = currentAttrData?.byOwner[loadedRemId] || [];
+    xml += `  <center id="${escapeXml(loadedRemId)}" name="${escapeXml(loadedRemName)}">\n`;
+
+    if (centerAttrs.length > 0) {
+      xml += `    <${attributeType}s>\n`;
+      for (const attr of centerAttrs) {
+        xml += attributeNodeToXml(attr, '      ');
+      }
+      xml += `    </${attributeType}s>\n`;
+    }
+
+    xml += '  </center>\n';
+
+    // Add ancestors
+    if (ancestorTrees.length > 0) {
+      xml += '  <ancestors>\n';
+      for (const ancestor of ancestorTrees) {
+        xml += hierarchyNodeToXml(ancestor, '    ');
+      }
+      xml += '  </ancestors>\n';
+    }
+
+    // Add descendants
+    if (descendantTrees.length > 0) {
+      xml += '  <descendants>\n';
+      for (const descendant of descendantTrees) {
+        xml += hierarchyNodeToXml(descendant, '    ');
+      }
+      xml += '  </descendants>\n';
+    }
+
+    xml += '</mindmap>';
+    return xml;
+  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, propertyData, interfaceData, attributeType, escapeXml]);
+
+  // Handle export to XML
+  const handleExportToXml = useCallback(async () => {
+    const xml = treeToXml();
+    if (!xml) {
+      setError("No data to export");
+      setPaneContextMenu(null);
+      return;
+    }
+
+    try {
+      // Try using the Clipboard API first
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(xml);
+      } else {
+        // Fallback: create a temporary textarea element
+        const textArea = document.createElement('textarea');
+        textArea.value = xml;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        textArea.style.top = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      await plugin.app.toast("XML copied to clipboard!");
+    } catch (err) {
+      console.error("Failed to copy to clipboard:", err);
+      // Try the fallback method even if the first attempt failed
+      try {
+        const textArea = document.createElement('textarea');
+        textArea.value = xml;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        textArea.style.top = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const success = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (success) {
+          await plugin.app.toast("XML copied to clipboard!");
+        } else {
+          setError("Failed to copy to clipboard");
+        }
+      } catch (fallbackErr) {
+        console.error("Fallback copy also failed:", fallbackErr);
+        setError("Failed to copy to clipboard");
+      }
+    }
+
+    setPaneContextMenu(null);
+  }, [treeToXml, plugin]);
+
+  // Handle pane (empty space) right-click
+  const handlePaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
+    event.preventDefault();
+    setPaneContextMenu({
+      x: 'clientX' in event ? event.clientX : 0,
+      y: 'clientY' in event ? event.clientY : 0,
+    });
+  }, []);
+
   const showPlaceholder = nodes.length === 0;
 
   return (
@@ -2974,6 +3168,7 @@ function MindmapWidget() {
               onInit={setReactFlowInstance}
               onNodeClick={handleNodeClick}
               onNodeContextMenu={handleNodeContextMenu}
+              onPaneContextMenu={handlePaneContextMenu}
               onNodesChange={handleNodesChange}
               nodesDraggable
               nodesConnectable={false}
@@ -3113,6 +3308,39 @@ function MindmapWidget() {
               onClick={handleImplementVirtualProperty}
             >
               Implement
+            </button>
+          </div>
+        )}
+        {paneContextMenu && (
+          <div
+            style={{
+              position: 'fixed',
+              left: paneContextMenu.x,
+              top: paneContextMenu.y,
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 4,
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+              zIndex: 1000,
+              minWidth: 120,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: loadedRemId ? 'pointer' : 'not-allowed',
+                fontSize: 14,
+                color: loadedRemId ? '#374151' : '#9ca3af',
+              }}
+              onClick={handleExportToXml}
+              disabled={!loadedRemId}
+            >
+              Export
             </button>
           </div>
         )}
