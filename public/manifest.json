@@ -9,9 +9,9 @@
   "version": {
     "major": 0,
     "minor": 0,
-    "patch": 13
+    "patch": 36
   },
-  "requestNative": false,
+  "requestNative": true,
   "requiredScopes": [
     {
       "type": "All",

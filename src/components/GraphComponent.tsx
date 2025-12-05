@@ -1,23 +1,21 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ReactFlow, Node, Edge, useReactFlow, NodeTypes, OnNodesChange, OnEdgesChange } from "@xyflow/react";
-import { renderWidget, useTrackerPlugin, Rem, usePlugin } from "@remnote/plugin-sdk";
+import { ReactFlow, Node, Edge, useReactFlow, NodeTypes, OnNodesChange, OnEdgesChange, NodeMouseHandler } from "reactflow";
+import { renderWidget, useTrackerPlugin, usePlugin } from "@remnote/plugin-sdk";
 import { NodeData } from "../components/Nodes";
 
 // Define the props interface
-interface GraphComponentProps<T extends Node> {
-  nodes: T[];
+interface GraphComponentProps {
+  nodes: Node[];
   edges: Edge[];
   nodeTypes: NodeTypes;
-  onNodesChange: OnNodesChange<T>;
-  onEdgesChange: OnEdgesChange<Edge>;
-  //onNodeClick: any;
-  //onContextMenu: any;
-  onNodeClick?: (event: React.MouseEvent, node: T) => void;
-  onNodeContextMenu?: (event: React.MouseEvent, node: T) => void;
+  onNodesChange: OnNodesChange;
+  onEdgesChange: OnEdgesChange;
+  onNodeClick?: NodeMouseHandler;
+  onNodeContextMenu?: NodeMouseHandler;
 }
 
 // Update the component with typed props
-export function GraphComponent<T extends Node>({
+export function GraphComponent({
   nodes,
   edges,
   nodeTypes,
@@ -25,7 +23,7 @@ export function GraphComponent<T extends Node>({
   onEdgesChange,
   onNodeClick,
   onNodeContextMenu
-}: GraphComponentProps<T>) {
+}: GraphComponentProps) {
   const plugin = usePlugin();
   const { fitView } = useReactFlow();
 

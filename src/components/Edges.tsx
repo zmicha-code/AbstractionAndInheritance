@@ -1,5 +1,5 @@
 import React from "react";
-import { BaseEdge, EdgeProps } from "@xyflow/react";
+import { BaseEdge, EdgeProps } from "reactflow";
 
 /**
  * Generates a deterministic "random" offset between 0.25 and 0.75 based on the edge ID.
