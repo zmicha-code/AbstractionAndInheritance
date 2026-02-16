@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -784,11 +784,13 @@ async function createGraphData(
     }
     
     // For each ancestor REM, look up its actual parents using getParentClass
+    // NOTE: We include ALL parents (not just those in hierarchy) so that
+    // implementedByOwner correctly tracks what each rem implements through extends
     for (const [remId, remRef] of ancestorRemRefs) {
       const parents = await getParentClass(plugin, remRef);
       childToParentsMap[remId] = new Set(
         parents
-          .filter(p => p && ancestorRemRefs.has(p._id))
+          .filter(p => p)
           .map(p => p._id)
       );
     }
@@ -798,12 +800,13 @@ async function createGraphData(
     
     // For each descendant REM, look up its actual parents using getParentClass
     // This properly handles multiple inheritance via "extends"
+    // NOTE: We include ALL parents (not just those in hierarchy) so that
+    // implementedByOwner correctly tracks what each rem implements through extends
     for (const [remId, remRef] of descendantRemRefs) {
       const parents = await getParentClass(plugin, remRef);
-      // Include parents that are either in ancestors, descendants, or the center
       childToParentsMap[remId] = new Set(
         parents
-          .filter(p => p && (ancestorRemRefs.has(p._id) || descendantRemRefs.has(p._id) || p._id === centerId))
+          .filter(p => p)
           .map(p => p._id)
       );
     }
@@ -1125,11 +1128,13 @@ async function integrateAttributeGraph(
     const descendantRemRefs = collectRemRefs(descendants);
     
     // For each ancestor REM, look up its actual parents using getParentClass
+    // NOTE: We include ALL parents (not just those in hierarchy) so that
+    // implementedByOwner correctly tracks what each rem implements through extends
     for (const [remId, remRef] of ancestorRemRefs) {
       const parents = await getParentClass(plugin, remRef);
       childToParentsMap[remId] = new Set(
         parents
-          .filter(p => p && ancestorRemRefs.has(p._id))
+          .filter(p => p)
           .map(p => p._id)
       );
     }
@@ -1139,12 +1144,13 @@ async function integrateAttributeGraph(
     
     // For each descendant REM, look up its actual parents using getParentClass
     // This properly handles multiple inheritance via "extends"
+    // NOTE: We include ALL parents (not just those in hierarchy) so that
+    // implementedByOwner correctly tracks what each rem implements through extends
     for (const [remId, remRef] of descendantRemRefs) {
       const parents = await getParentClass(plugin, remRef);
-      // Include parents that are either in ancestors, descendants, or the center
       childToParentsMap[remId] = new Set(
         parents
-          .filter(p => p && (ancestorRemRefs.has(p._id) || descendantRemRefs.has(p._id) || p._id === centerId))
+          .filter(p => p)
           .map(p => p._id)
       );
     }
@@ -1461,13 +1467,6 @@ function buildVirtualAttributeData(
     return result;
   };
 
-  for (const [ownerId, attrs] of Object.entries(attributeData.byOwner)) {
-    implementedByOwner[ownerId] = collectImplementedIds(attrs);
-  }
-
-  // Build ancestor chain for ALL REMs (ancestors, center, and descendants)
-  const remAncestorMap: Record<string, string[]> = {};
-
   // Helper to collect all IDs from a forest (flattened)
   const collectAllIdsFromForest = (forest: HierarchyNode[]): string[] => {
     const ids: string[] = [];
@@ -1484,6 +1483,7 @@ function buildVirtualAttributeData(
 
   // Get ALL ancestor IDs (flattened from the entire forest)
   const allAncestorIds = collectAllIdsFromForest(ancestors);
+  const allDescendantIds = collectAllIdsFromForest(descendants);
 
   // Compute the TRANSITIVE ancestors for a given node using the pre-built parent map
   // This correctly handles the DAG structure where nodes may have multiple parents
@@ -1511,6 +1511,29 @@ function buildVirtualAttributeData(
     return result;
   };
 
+  // Build implementedByOwner: for each rem, collect what it "implements" through:
+  // 1. Its structural children (interfaces) and their extends
+  // 2. Its own extends relationships (what it directly inherits from via hierarchy/extends)
+  for (const [ownerId, attrs] of Object.entries(attributeData.byOwner)) {
+    implementedByOwner[ownerId] = collectImplementedIds(attrs);
+  }
+  
+  // Also add each rem's transitive ancestors (via extends/hierarchy) to its implemented set
+  // This ensures that if Crossbow extends Two-Handed Weapon, Crossbow "implements" Two-Handed Weapon
+  const allRemIds = [centerId, ...allAncestorIds, ...allDescendantIds];
+  for (const remId of allRemIds) {
+    if (!implementedByOwner[remId]) {
+      implementedByOwner[remId] = new Set();
+    }
+    const transitiveAncestors = computeTransitiveAncestors(remId);
+    for (const ancestorId of transitiveAncestors) {
+      implementedByOwner[remId].add(ancestorId);
+    }
+  }
+
+  // Build ancestor chain for ALL REMs (ancestors, center, and descendants)
+  const remAncestorMap: Record<string, string[]> = {};
+
   // Build remAncestorMap for all ancestor REMs using transitive closure
   for (const ancestorId of allAncestorIds) {
     remAncestorMap[ancestorId] = [...computeTransitiveAncestors(ancestorId)];
@@ -1521,12 +1544,47 @@ function buildVirtualAttributeData(
 
   // For each descendant, build the ancestor chain using the proper childToParentsMap
   // This correctly handles multiple inheritance via "extends"
-  const allDescendantIds = collectAllIdsFromForest(descendants);
   for (const descendantId of allDescendantIds) {
     // Use computeTransitiveAncestors which properly follows all parent relationships
     // including both structural parents and "extends" relationships
     remAncestorMap[descendantId] = [...computeTransitiveAncestors(descendantId)];
   }
+
+  // Build a parent-to-children map (inverse of childToParentsMap) for computing descendants
+  const parentToChildrenMap: Record<string, Set<string>> = {};
+  for (const [childId, parentIds] of Object.entries(childToParentsMap)) {
+    for (const parentId of parentIds) {
+      if (!parentToChildrenMap[parentId]) {
+        parentToChildrenMap[parentId] = new Set();
+      }
+      parentToChildrenMap[parentId].add(childId);
+    }
+  }
+
+  // Compute transitive descendants for a given node
+  const computeTransitiveDescendants = (nodeId: string): Set<string> => {
+    const result = new Set<string>();
+    const visited = new Set<string>();
+    const stack = [...(parentToChildrenMap[nodeId] || [])];
+    
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      result.add(current);
+      
+      const children = parentToChildrenMap[current];
+      if (children) {
+        for (const child of children) {
+          if (!visited.has(child)) {
+            stack.push(child);
+          }
+        }
+      }
+    }
+    
+    return result;
+  };
 
   // Now for each REM, find which ancestor properties are NOT implemented
   // We need to only show the "closest" unimplemented property in the chain
@@ -1535,6 +1593,12 @@ function buildVirtualAttributeData(
   for (const [remId, ancestorIds] of Object.entries(remAncestorMap)) {
     const implemented = implementedByOwner[remId] || new Set<string>();
     const candidateVirtualAttrs: VirtualAttributeInfo[] = [];
+    
+    // Build a set of this rem's ancestors for quick lookup
+    const remAncestorSet = new Set(ancestorIds);
+    
+    // Build a set of this rem's descendants
+    const remDescendantSet = computeTransitiveDescendants(remId);
 
     // First pass: collect all unimplemented properties as candidates
     for (const ancestorId of ancestorIds) {
@@ -1542,6 +1606,17 @@ function buildVirtualAttributeData(
       
       // Only check top-level properties (documents under the ancestor), not their children
       for (const prop of ancestorProps) {
+        // Skip the rem itself
+        if (prop.id === remId) continue;
+        
+        // Skip if this property's rem ID is an ancestor of the current rem
+        // (a rem should not appear as a virtual interface if it's an ancestor through hierarchy or extends)
+        if (remAncestorSet.has(prop.id)) continue;
+        
+        // Skip if this property's rem ID is a descendant of the current rem
+        // (a rem should not implement its descendants as interfaces)
+        if (remDescendantSet.has(prop.id)) continue;
+        
         // Check if this property (or something extending it) is implemented
         if (!implemented.has(prop.id)) {
           // Check if we already have a virtual node for this property on this REM
@@ -2587,7 +2662,7 @@ function MindmapWidget() {
       const nodeData = clickedNode?.data as GraphNodeData | undefined;
       const isProperty = nodeData?.kind === 'virtualProperty';
       
-      // Get the owner REM and source property
+      // Get the owner REM and source property/interface
       const ownerRem = await plugin.rem.findOne(virtualContextMenu.ownerRemId);
       const sourceProperty = await plugin.rem.findOne(virtualContextMenu.sourcePropertyId);
       
@@ -2597,37 +2672,74 @@ function MindmapWidget() {
         return;
       }
       
-      // Create new child REM with same name
-      const newRem = await plugin.rem.createRem();
-      if (!newRem) {
-        setError("Failed to create new REM");
-        handleContextMenuClose();
-        return;
-      }
-      
-      // Set the text to match the source property
-      const sourceText = sourceProperty.text;
-      if (sourceText) {
-        await newRem.setText(sourceText);
-      }
-      
-      // Set parent to owner REM
-      await newRem.setParent(ownerRem);
-      
-      // Only make it a document for properties, not interfaces
       if (isProperty) {
-        await newRem.setIsDocument(true);
-      }
-      
-      // Create extends relationship to source property
-      // This requires creating an "extends" descriptor child
-      const extendsDesc = await plugin.rem.createRem();
-      if (extendsDesc) {
-        await extendsDesc.setText(["extends"]);
-        await extendsDesc.setParent(newRem);
-        await extendsDesc.setType(SetRemType.DESCRIPTOR);
+        // For virtual properties: Create new child REM with same name and extends relationship
+        const newRem = await plugin.rem.createRem();
+        if (!newRem) {
+          setError("Failed to create new REM");
+          handleContextMenuClose();
+          return;
+        }
         
-        // Add reference to source property
+        // Set the text to match the source property
+        const sourceText = sourceProperty.text;
+        if (sourceText) {
+          await newRem.setText(sourceText);
+        }
+        
+        // Set parent to owner REM
+        await newRem.setParent(ownerRem);
+        
+        // Make it a document for properties
+        await newRem.setIsDocument(true);
+        
+        // Create extends relationship to source property
+        // This requires creating an "extends" descriptor child
+        const extendsDesc = await plugin.rem.createRem();
+        if (extendsDesc) {
+          await extendsDesc.setText(["extends"]);
+          await extendsDesc.setParent(newRem);
+          await extendsDesc.setType(SetRemType.DESCRIPTOR);
+          
+          // Add reference to source property
+          const refChild = await plugin.rem.createRem();
+          if (refChild) {
+            await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
+            await refChild.setParent(extendsDesc);
+          }
+        }
+        
+        // Update descendant properties that extend the same source property
+        // to now extend this newly created property instead.
+        const updatedCount = await updateDescendantPropertyReferences(plugin, newRem, ownerRem, sourceProperty);
+        
+        // Show toast message if any descendant properties were updated
+        if (updatedCount > 0) {
+          await plugin.app.toast(
+            `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'property' : 'properties'} to extend the new property.`
+          );
+        }
+      } else {
+        // For virtual interfaces: Add reference to the interface in the owner rem's extends list
+        // Structure: rem A -> rem extends (descriptor) -> [[interface]]
+        
+        // Find or create the "extends" descriptor under the owner rem
+        let extendsDesc = await getExtendsDescriptor(plugin, ownerRem);
+        
+        if (!extendsDesc) {
+          // Create the "extends" descriptor if it doesn't exist
+          extendsDesc = await plugin.rem.createRem();
+          if (!extendsDesc) {
+            setError("Failed to create extends descriptor");
+            handleContextMenuClose();
+            return;
+          }
+          await extendsDesc.setText(["extends"]);
+          await extendsDesc.setParent(ownerRem);
+          await extendsDesc.setType(SetRemType.DESCRIPTOR);
+        }
+        
+        // Add reference to the source interface under the extends descriptor
         const refChild = await plugin.rem.createRem();
         if (refChild) {
           await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
@@ -2635,26 +2747,13 @@ function MindmapWidget() {
         }
       }
       
-      // Update descendant properties that extend the same source property
-      // to now extend this newly created property instead.
-      // This ensures the inheritance chain is properly maintained regardless
-      // of the order in which properties are implemented.
-      const updatedCount = await updateDescendantPropertyReferences(plugin, newRem, ownerRem, sourceProperty);
-      
-      // Show toast message if any descendant properties were updated
-      if (updatedCount > 0) {
-        await plugin.app.toast(
-          `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'property' : 'properties'} to extend the new property.`
-        );
-      }
-      
       // Reload the hierarchy to reflect changes
       if (loadedRemId) {
         await loadHierarchy(loadedRemId);
       }
     } catch (err) {
-      console.error("Failed to create implementing property:", err);
-      setError("Failed to create property");
+      console.error("Failed to implement:", err);
+      setError("Failed to implement");
     }
     
     handleContextMenuClose();
