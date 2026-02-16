@@ -1007,9 +1007,17 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
     getExtendsParents(plugin, rem),
   ]);
 
+  const remName = await getRemText(plugin, rem);
+  const directParentName = directParent ? await getRemText(plugin, directParent) : "(null)";
+  console.log(`[getParentClass] Rem: "${remName}" (${rem._id}), isDocument=${isDocument}, directParent="${directParentName}" (${directParent?._id}), extendsParents=${extendsParents.length}`);
+
   // Property (document): inherits via extends, otherwise defines a new type
   if (isDocument) {
-    if (extendsParents.length > 0) return extendsParents;
+    if (extendsParents.length > 0) {
+      console.log(`[getParentClass]   Document with extends, returning extendsParents`);
+      return extendsParents;
+    }
+    console.log(`[getParentClass]   Document without extends, returning [self]`);
     return [rem];
   }
 
@@ -1017,6 +1025,7 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
   const result: Rem[] = [];
   if (directParent) result.push(directParent);
   for (const p of extendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
+  console.log(`[getParentClass]   Non-document, returning ${result.length} parents`);
   return result.length > 0 ? result : [rem];
 }
 

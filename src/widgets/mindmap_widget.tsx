@@ -357,10 +357,15 @@ async function buildAncestorNodes(
   rem: PluginRem,
   visited: Set<string>
 ): Promise<HierarchyNode[]> {
+  const remName = await getRemText(plugin, rem);
   const parents = await getParentClass(plugin, rem);
+  console.log(`[buildAncestorNodes] Rem: "${remName}" (${rem._id}), parents:`, parents.map(p => p._id));
   const uniqueParents = new Map<string, PluginRem>();
   for (const parent of parents) {
-    if (!parent || parent._id === rem._id || visited.has(parent._id)) continue;
+    const parentName = parent ? await getRemText(plugin, parent) : "(null)";
+    const skip = !parent || parent._id === rem._id || visited.has(parent._id);
+    console.log(`[buildAncestorNodes]   Checking parent "${parentName}" (${parent?._id}): skip=${skip}, self=${parent?._id === rem._id}, visited=${visited.has(parent?._id ?? "")}`);
+    if (skip) continue;
     uniqueParents.set(parent._id, parent);
   }
 
@@ -371,6 +376,7 @@ async function buildAncestorNodes(
       getRemText(plugin, parent),
       buildAncestorNodes(plugin, parent, visited),
     ]);
+    console.log(`[buildAncestorNodes]   Added parent "${name}" with ${ancestors.length} ancestors`);
     result.push({
       id: parent._id,
       name: name || "(Untitled Rem)",
@@ -503,7 +509,9 @@ function layoutSubtreeHorizontal(
   virtualAttributeData?: VirtualAttributeData,
   hiddenVirtualAttributes?: Set<string>
 ): GraphNode | null {
+  console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" (${node.id}), orientation=${orientation}, relation=${relation}, existingNodeIds.has=${existingNodeIds.has(node.id)}`);
   if (existingNodeIds.has(node.id)) {
+    console.log(`[layoutSubtreeHorizontal]   SKIPPED - already exists`);
     return nodes.find((n) => n.id === node.id) ?? null;
   }
 
@@ -579,10 +587,13 @@ function layoutSubtreeHorizontal(
     });
   }
 
+  console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" checking children: collapsed=${collapsed.has(node.id)}, children.length=${node.children?.length}`);
   if (collapsed.has(node.id) || !node.children?.length) {
+    console.log(`[layoutSubtreeHorizontal]   NOT recursing into children`);
     return graphNode;
   }
 
+  console.log(`[layoutSubtreeHorizontal]   Recursing into ${node.children.length} children`);
   layoutChildrenHorizontal(
     node.children,
     graphNode,
