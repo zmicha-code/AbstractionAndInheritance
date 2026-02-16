@@ -74,6 +74,11 @@ export const VIRTUAL_PROPERTY_NODE_STYLE: React.CSSProperties = {
   fontStyle: "italic",
 };
 
+export const VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...VIRTUAL_PROPERTY_NODE_STYLE,
+  background: "#c9c9c9",
+};
+
 export const VIRTUAL_INTERFACE_NODE_STYLE: React.CSSProperties = {
   ...MINDMAP_NODE_BASE,
   background: "#e5e5e5",
@@ -82,6 +87,11 @@ export const VIRTUAL_INTERFACE_NODE_STYLE: React.CSSProperties = {
   minWidth: 160,
   opacity: 0.7,
   fontStyle: "italic",
+};
+
+export const VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...VIRTUAL_INTERFACE_NODE_STYLE,
+  background: "#c9c9c9",
 };
 
 // Helper to get the appropriate style with optional width
@@ -104,9 +114,9 @@ export function getNodeStyle(
   } else if (kind === 'interface') {
     style = isCollapsed ? INTERFACE_NODE_STYLE_COLLAPSED : INTERFACE_NODE_STYLE;
   } else if (kind === 'virtualProperty') {
-    style = VIRTUAL_PROPERTY_NODE_STYLE;
+    style = isCollapsed ? VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_PROPERTY_NODE_STYLE;
   } else {
-    style = VIRTUAL_INTERFACE_NODE_STYLE;
+    style = isCollapsed ? VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_NODE_STYLE;
   }
   
   return width ? { ...style, width } : style;

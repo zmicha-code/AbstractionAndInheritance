@@ -88,6 +88,7 @@ type VirtualAttributeInfo = {
   label: string;                 // Same label as source property
   sourcePropertyId: string;      // The ancestor property this inherits from
   ownerRemId: string;            // The REM that should implement this
+  children: VirtualAttributeInfo[];  // Children from the source property (for expandable virtual interfaces)
 };
 
 type VirtualAttributeData = {
@@ -1187,6 +1188,7 @@ async function integrateAttributeGraph(
         existingNodeIds,
         existingEdgeIds,
         kind,
+        collapsed,
         nodePositions
       );
     }
@@ -1444,6 +1446,17 @@ function buildVirtualAttributeData(
     return ancestors;
   };
 
+  // Helper to recursively build virtual children from AttributeNodeInfo children
+  const buildVirtualChildren = (children: AttributeNodeInfo[], ownerRemId: string): VirtualAttributeInfo[] => {
+    return children.map(child => ({
+      id: `virtual:${ownerRemId}:${child.id}`,
+      label: child.label,
+      sourcePropertyId: child.id,
+      ownerRemId: ownerRemId,
+      children: buildVirtualChildren(child.children, ownerRemId),
+    }));
+  };
+
   // Build a map of which properties each REM implements (directly or via extends)
   const implementedByOwner: Record<string, Set<string>> = {};
   
@@ -1627,6 +1640,7 @@ function buildVirtualAttributeData(
               label: prop.label,
               sourcePropertyId: prop.id,
               ownerRemId: remId,
+              children: buildVirtualChildren(prop.children, remId),
             });
           }
         }
@@ -1657,6 +1671,123 @@ function buildVirtualAttributeData(
   return { byOwner };
 }
 
+function layoutVirtualAttributeDescendants(
+  parentNode: GraphNode,
+  children: VirtualAttributeInfo[],
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  existingNodeIds: Set<string>,
+  existingEdgeIds: Set<string>,
+  kind: 'property' | 'interface',
+  collapsed: Set<string>,
+  nodePositions?: Map<string, { x: number; y: number }>
+) {
+  if (children.length === 0) return;
+
+  const sorted = [...children].sort((a, b) => a.label.localeCompare(b.label));
+  const parentData = parentNode.data as GraphNodeData;
+  const parentStyleWidth = parentNode.style?.width;
+  const parentWidth =
+    typeof parentStyleWidth === "number"
+      ? parentStyleWidth
+      : estimateNodeWidth(parentData.label, parentData.kind);
+  const baseX = parentNode.position.x + parentWidth + ATTRIBUTE_HORIZONTAL_SPACING;
+  const startOffset = ((sorted.length - 1) / 2) * ATTRIBUTE_VERTICAL_SPACING;
+
+  sorted.forEach((info, index) => {
+    const nodeId = info.id;
+    const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualInterface';
+    const hasChildren = info.children && info.children.length > 0;
+    const isCollapsed = collapsed.has(info.id);
+    const attrWidth = estimateNodeWidth(info.label, virtualKind);
+    let posX = baseX;
+    let posY = parentNode.position.y + index * ATTRIBUTE_VERTICAL_SPACING - startOffset;
+
+    const storedPos = nodePositions?.get(nodeId);
+    if (storedPos) {
+      posX = storedPos.x;
+      posY = storedPos.y;
+    }
+
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, attrWidth);
+
+    let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
+    let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
+    const updatedData: GraphNodeData = {
+      label: info.label,
+      remId: info.id,
+      kind: virtualKind,
+      sourcePropertyId: info.sourcePropertyId,
+      ownerRemId: info.ownerRemId,
+    };
+
+    if (!childNode) {
+      childNode = {
+        id: nodeId,
+        position: { x: posX, y: posY },
+        data: updatedData,
+        style: nodeStyle,
+        draggable: true,
+        selectable: true,
+        type: `${virtualKind}Node`,
+      };
+      nodes.push(childNode);
+      existingNodeIds.add(nodeId);
+      childNodeIndex = nodes.length - 1;
+    } else {
+      if (!storedPos) {
+        childNode = {
+          ...childNode,
+          position: { x: posX, y: posY },
+          data: updatedData,
+          style: nodeStyle,
+        };
+        nodes[childNodeIndex] = childNode;
+      } else {
+        childNode = {
+          ...childNode,
+          data: updatedData,
+          style: nodeStyle,
+        };
+        nodes[childNodeIndex] = childNode;
+      }
+    }
+
+    existingNodeIds.add(nodeId);
+
+    // Create edge from parent virtual node to child virtual node
+    const linkEdgeId = `vattr-child:${parentNode.id}->${info.id}`;
+    if (!existingEdgeIds.has(linkEdgeId)) {
+      edges.push({
+        id: linkEdgeId,
+        source: parentNode.id,
+        target: nodeId,
+        sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+        type: "randomOffset",
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+        style: { stroke: "#9ca3af", strokeDasharray: "4 2" }, // Grey dashed line for virtual children
+      });
+      existingEdgeIds.add(linkEdgeId);
+    }
+
+    // Recursively layout children if not collapsed
+    if (hasChildren && !isCollapsed) {
+      layoutVirtualAttributeDescendants(
+        childNode,
+        info.children,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        kind,
+        collapsed,
+        nodePositions
+      );
+    }
+  });
+}
+
 function layoutVirtualAttributes(
   ownerNode: GraphNode,
   virtualAttrs: VirtualAttributeInfo[],
@@ -1666,6 +1797,7 @@ function layoutVirtualAttributes(
   existingNodeIds: Set<string>,
   existingEdgeIds: Set<string>,
   kind: 'property' | 'interface',
+  collapsed: Set<string>,
   nodePositions?: Map<string, { x: number; y: number }>
 ) {
   if (virtualAttrs.length === 0) return;
@@ -1697,6 +1829,8 @@ function layoutVirtualAttributes(
     if (existingNodeIds.has(nodeId)) return;
 
     const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualInterface';
+    const hasChildren = info.children && info.children.length > 0;
+    const isCollapsed = collapsed.has(info.id);
     const attrWidth = estimateNodeWidth(info.label, virtualKind);
     let posX = ownerNode.position.x + ownerWidth / 2 - attrWidth / 2;
     let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
@@ -1707,7 +1841,7 @@ function layoutVirtualAttributes(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, false, false, attrWidth);
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, attrWidth);
 
     nodes.push({
       id: nodeId,
@@ -1726,6 +1860,8 @@ function layoutVirtualAttributes(
     });
     existingNodeIds.add(nodeId);
 
+    const virtualNode = nodes[nodes.length - 1];
+
     // Create edge from owner REM node to virtual property (like regular properties)
     const ownerEdgeId = `vattr-link:${ownerNode.id}->${info.id}`;
     if (!existingEdgeIds.has(ownerEdgeId)) {
@@ -1740,6 +1876,21 @@ function layoutVirtualAttributes(
         style: { stroke: "#9ca3af" }, // Grey line (no dash for owner connection)
       });
       existingEdgeIds.add(ownerEdgeId);
+    }
+
+    // Layout virtual children if not collapsed and has children
+    if (hasChildren && !isCollapsed) {
+      layoutVirtualAttributeDescendants(
+        virtualNode,
+        info.children,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        kind,
+        collapsed,
+        nodePositions
+      );
     }
 
     // Create edge from source property to virtual node (inheritance link)
@@ -2093,6 +2244,68 @@ function MindmapWidget() {
             collapsed.add(detail.id);
           }
         }
+
+        // 1.4 Build virtual attribute data and collapse virtual interfaces with children
+        // Helper to collect all REM refs from a forest
+        const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
+          const remRefs = new Map<string, PluginRem>();
+          const stack = [...forest];
+          while (stack.length > 0) {
+            const node = stack.pop()!;
+            if (node.remRef) {
+              remRefs.set(node.id, node.remRef);
+            }
+            if (node.children?.length) {
+              stack.push(...node.children);
+            }
+          }
+          return remRefs;
+        };
+
+        // Build childToParentsMap for virtual attribute computation
+        const childToParentsMap: Record<string, Set<string>> = {};
+        const ancestorRemRefs = collectRemRefs(ancestorTreesResult);
+        const descendantRemRefs = collectRemRefs(descendantTreesResult);
+
+        for (const [remIdKey, remRef] of ancestorRemRefs) {
+          const parents = await getParentClass(plugin, remRef);
+          childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
+        }
+        childToParentsMap[rem._id] = new Set(ancestorTreesResult.map(a => a.id));
+        for (const [remIdKey, remRef] of descendantRemRefs) {
+          const parents = await getParentClass(plugin, remRef);
+          childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
+        }
+
+        // Build virtual interface data and collapse those with children
+        const virtualInterfaceData = buildVirtualAttributeData(
+          interfaces,
+          rem._id,
+          ancestorTreesResult,
+          descendantTreesResult,
+          'interface',
+          childToParentsMap
+        );
+
+        // Helper to recursively collect virtual IDs with children
+        const collectVirtualWithChildren = (attrs: VirtualAttributeInfo[]): string[] => {
+          const ids: string[] = [];
+          for (const attr of attrs) {
+            if (attr.children && attr.children.length > 0) {
+              ids.push(attr.id);
+              ids.push(...collectVirtualWithChildren(attr.children));
+            }
+          }
+          return ids;
+        };
+
+        for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
+          const virtualIds = collectVirtualWithChildren(virtualAttrs);
+          for (const id of virtualIds) {
+            collapsed.add(id);
+          }
+        }
+
         const hidden = new Set<string>();
 
         setAncestorTrees(ancestorTreesResult);
@@ -2616,6 +2829,19 @@ function MindmapWidget() {
         const currentData = data.kind === "property" ? propertyData : interfaceData;
         const detail = currentData?.byId[targetId];
         hasChildren = !!detail?.hasChildren;
+      } else if (data?.kind === "virtualProperty" || data?.kind === "virtualInterface") {
+        // For virtual attributes, check if the source property has children
+        const currentData = data.kind === "virtualProperty" ? propertyData : interfaceData;
+        if (data.sourcePropertyId && currentData?.byId[data.sourcePropertyId]) {
+          hasChildren = !!currentData.byId[data.sourcePropertyId].hasChildren;
+        }
+        // Toggle collapsed state using the virtual attribute's own ID (info.id format)
+        if (!hasChildren) return;
+        const virtualNodeId = data.remId; // This is the virtual:ownerRemId:sourcePropertyId format
+        const next = new Set(collapsedNodes);
+        next.has(virtualNodeId) ? next.delete(virtualNodeId) : next.add(virtualNodeId);
+        setCollapsedNodes(next);
+        return;
       } else {
         const t = findNodeById(ancestorTrees, targetId) ?? findNodeById(descendantTrees, targetId);
         hasChildren = !!t?.children?.length;
