@@ -2245,7 +2245,7 @@ function MindmapWidget() {
           }
         }
 
-        // 1.4 Build virtual attribute data and collapse virtual interfaces with children
+        // 1.4 Build virtual attribute data and collapse virtual properties/interfaces with children
         // Helper to collect all REM refs from a forest
         const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
           const remRefs = new Map<string, PluginRem>();
@@ -2277,16 +2277,6 @@ function MindmapWidget() {
           childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
         }
 
-        // Build virtual interface data and collapse those with children
-        const virtualInterfaceData = buildVirtualAttributeData(
-          interfaces,
-          rem._id,
-          ancestorTreesResult,
-          descendantTreesResult,
-          'interface',
-          childToParentsMap
-        );
-
         // Helper to recursively collect virtual IDs with children
         const collectVirtualWithChildren = (attrs: VirtualAttributeInfo[]): string[] => {
           const ids: string[] = [];
@@ -2298,6 +2288,33 @@ function MindmapWidget() {
           }
           return ids;
         };
+
+        // Build virtual property data and collapse those with children
+        const virtualPropertyData = buildVirtualAttributeData(
+          properties,
+          rem._id,
+          ancestorTreesResult,
+          descendantTreesResult,
+          'property',
+          childToParentsMap
+        );
+
+        for (const virtualAttrs of Object.values(virtualPropertyData.byOwner)) {
+          const virtualIds = collectVirtualWithChildren(virtualAttrs);
+          for (const id of virtualIds) {
+            collapsed.add(id);
+          }
+        }
+
+        // Build virtual interface data and collapse those with children
+        const virtualInterfaceData = buildVirtualAttributeData(
+          interfaces,
+          rem._id,
+          ancestorTreesResult,
+          descendantTreesResult,
+          'interface',
+          childToParentsMap
+        );
 
         for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
           const virtualIds = collectVirtualWithChildren(virtualAttrs);
