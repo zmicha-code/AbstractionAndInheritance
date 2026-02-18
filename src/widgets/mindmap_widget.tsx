@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences, hasTag } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -70,6 +70,7 @@ type AttributeNodeInfo = {
   label: string;
   extends: string[];
   children: AttributeNodeInfo[];
+  isPrivate: boolean;
 };
 
 type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
@@ -1394,11 +1395,12 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         extendsIds = [...new Set(parentRems.map((p) => p._id))];
       } catch {}
       const subChildren = await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
-      attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren });
+      const isPrivate = await hasTag(plugin, attr, "Private");
+      attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren, isPrivate });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId };
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1621,6 +1623,9 @@ function buildVirtualAttributeData(
       for (const prop of ancestorProps) {
         // Skip the rem itself
         if (prop.id === remId) continue;
+        
+        // Skip if this property has the "Private" tag
+        if (prop.isPrivate) continue;
         
         // Skip if this property's rem ID is an ancestor of the current rem
         // (a rem should not appear as a virtual interface if it's an ancestor through hierarchy or extends)
