@@ -2626,6 +2626,137 @@ async function replaceExtendsReference(
   return replaced;
 }
 
+/**
+ * Helper to check if a REM is an eligible interface (not doc, not slot, not descriptor, no cards)
+ */
+async function isEligibleInterface(node: Rem): Promise<boolean> {
+  try {
+    const [isDoc, isSlot, type, cards] = await Promise.all([
+      node.isDocument(),
+      node.isSlot(),
+      node.getType(),
+      node.getCards(),
+    ]);
+    const hasCards = (cards?.length ?? 0) > 0;
+    return !isDoc && !isSlot && type !== RemType.DESCRIPTOR && !hasCards;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * After implementing an interface in a REM, updates any descendant interfaces
+ * that extend the same ancestor interface to instead extend the newly created interface.
+ * 
+ * Example: If RemA has InterfaceA, and RemC.InterfaceC extends InterfaceA,
+ * when we implement InterfaceA in RemB (between RemA and RemC), we need to update
+ * RemC.InterfaceC to extend the new interface instead of InterfaceA.
+ * 
+ * @param plugin - The RNPlugin instance
+ * @param newInterface - The owner REM (which is implementing the interface via extends)
+ * @param ownerRem - The REM that owns the new interface
+ * @param sourceInterface - The ancestor interface that the new interface extends
+ */
+export async function updateDescendantInterfaceReferences(
+  plugin: RNPlugin,
+  newInterface: Rem,
+  ownerRem: Rem,
+  sourceInterface: Rem
+): Promise<number> {
+  let updatedCount = 0;
+  
+  // Find all REMs that extend the ownerRem (descendants in the class hierarchy)
+  const extendsDescendants = await getExtendsChildren(plugin, ownerRem);
+  
+  // Also include structural children (both documents and non-documents, except descriptors)
+  // We need to traverse documents too because interfaces are non-documents that can be children of documents
+  const structuralChildren = await ownerRem.getChildrenRem();
+  const allDescendants = [...extendsDescendants];
+  for (const child of structuralChildren) {
+    // Skip the newInterface itself - we don't want to update the interface we just created
+    if (child._id === newInterface._id) continue;
+    
+    const type = await child.getType();
+    if (type !== RemType.DESCRIPTOR && !allDescendants.some(d => d._id === child._id)) {
+      allDescendants.push(child);
+    }
+  }
+  
+  // For each descendant, check if it has interfaces that extend the same sourceInterface
+  for (const descendant of allDescendants) {
+    updatedCount += await updateInterfaceReferencesInRem(plugin, descendant, newInterface, sourceInterface);
+    
+    // Recursively check descendants of descendants
+    updatedCount += await updateDescendantInterfaceReferencesRecursive(plugin, descendant, newInterface, sourceInterface, new Set([ownerRem._id, newInterface._id]));
+  }
+  
+  return updatedCount;
+}
+
+async function updateDescendantInterfaceReferencesRecursive(
+  plugin: RNPlugin,
+  currentRem: Rem,
+  newInterface: Rem,
+  sourceInterface: Rem,
+  visited: Set<string>
+): Promise<number> {
+  if (visited.has(currentRem._id)) return 0;
+  visited.add(currentRem._id);
+
+  let updatedCount = 0;
+  const extendsDescendants = await getExtendsChildren(plugin, currentRem);
+  const structuralChildren = await currentRem.getChildrenRem();
+  
+  // Include both documents and non-documents (except descriptors) to traverse
+  // since interfaces can be children of any type of rem
+  const allDescendants = [...extendsDescendants];
+  for (const child of structuralChildren) {
+    const type = await child.getType();
+    if (type !== RemType.DESCRIPTOR && !allDescendants.some(d => d._id === child._id)) {
+      allDescendants.push(child);
+    }
+  }
+  
+  for (const descendant of allDescendants) {
+    updatedCount += await updateInterfaceReferencesInRem(plugin, descendant, newInterface, sourceInterface);
+    updatedCount += await updateDescendantInterfaceReferencesRecursive(plugin, descendant, newInterface, sourceInterface, visited);
+  }
+  
+  return updatedCount;
+}
+
+/**
+ * Checks a specific REM for interfaces that extend sourceInterface and updates them
+ * to extend newInterface instead.
+ * @returns The number of interfaces that were updated
+ */
+async function updateInterfaceReferencesInRem(
+  plugin: RNPlugin,
+  rem: Rem,
+  newInterface: Rem,
+  sourceInterface: Rem
+): Promise<number> {
+  let updatedCount = 0;
+  const children = await rem.getChildrenRem();
+  
+  for (const child of children) {
+    const isInterface = await isEligibleInterface(child);
+    if (!isInterface) continue;
+    
+    // Check if this interface extends the sourceInterface
+    const extendsParents = await getExtendsParents(plugin, child);
+    const extendsSource = extendsParents.some(p => p._id === sourceInterface._id);
+    
+    if (extendsSource) {
+      // This interface extends the source - update it to extend the new interface instead
+      const wasUpdated = await replaceExtendsReference(plugin, child, sourceInterface._id, newInterface._id);
+      if (wasUpdated) updatedCount++;
+    }
+  }
+  
+  return updatedCount;
+}
+
 
 
 

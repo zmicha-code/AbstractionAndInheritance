@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences, hasTag } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -2992,6 +2992,22 @@ function MindmapWidget() {
         if (refChild) {
           await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
           await refChild.setParent(extendsDesc);
+        }
+        
+        // Update descendant interfaces that extend the same source interface
+        // to now extend this ownerRem (the interface) instead.
+        // We need to search from the PARENT of ownerRem (e.g., RemB) to find sibling
+        // descendants (e.g., RemC -> RemInterfaceC) that extend sourceProperty.
+        const ownerParent = await ownerRem.getParentRem();
+        if (ownerParent) {
+          const updatedCount = await updateDescendantInterfaceReferences(plugin, ownerRem, ownerParent, sourceProperty);
+          
+          // Show toast message if any descendant interfaces were updated
+          if (updatedCount > 0) {
+            await plugin.app.toast(
+              `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'interface' : 'interfaces'} to extend the new interface.`
+            );
+          }
         }
       }
       
