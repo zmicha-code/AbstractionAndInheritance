@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, getExtendsDescriptor, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -2968,46 +2968,49 @@ function MindmapWidget() {
           );
         }
       } else {
-        // For virtual interfaces: Add reference to the interface in the owner rem's extends list
-        // Structure: rem A -> rem extends (descriptor) -> [[interface]]
-        
-        // Find or create the "extends" descriptor under the owner rem
-        let extendsDesc = await getExtendsDescriptor(plugin, ownerRem);
-        
-        if (!extendsDesc) {
-          // Create the "extends" descriptor if it doesn't exist
-          extendsDesc = await plugin.rem.createRem();
-          if (!extendsDesc) {
-            setError("Failed to create extends descriptor");
-            handleContextMenuClose();
-            return;
-          }
-          await extendsDesc.setText(["extends"]);
-          await extendsDesc.setParent(ownerRem);
-          await extendsDesc.setType(SetRemType.DESCRIPTOR);
+        // For virtual interfaces: Create new child REM with same name and extends relationship
+        // (similar to virtual properties implementation)
+        const newRem = await plugin.rem.createRem();
+        if (!newRem) {
+          setError("Failed to create new REM");
+          handleContextMenuClose();
+          return;
         }
         
-        // Add reference to the source interface under the extends descriptor
-        const refChild = await plugin.rem.createRem();
-        if (refChild) {
-          await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
-          await refChild.setParent(extendsDesc);
+        // Set the text to match the source interface
+        const sourceText = sourceProperty.text;
+        if (sourceText) {
+          await newRem.setText(sourceText);
+        }
+        
+        // Set parent to owner REM
+        await newRem.setParent(ownerRem);
+        
+        // Create extends relationship to source interface
+        // This requires creating an "extends" descriptor child
+        const extendsDesc = await plugin.rem.createRem();
+        if (extendsDesc) {
+          await extendsDesc.setText(["extends"]);
+          await extendsDesc.setParent(newRem);
+          await extendsDesc.setType(SetRemType.DESCRIPTOR);
+          
+          // Add reference to source interface
+          const refChild = await plugin.rem.createRem();
+          if (refChild) {
+            await refChild.setText([{ i: "q", _id: sourceProperty._id }]);
+            await refChild.setParent(extendsDesc);
+          }
         }
         
         // Update descendant interfaces that extend the same source interface
-        // to now extend this ownerRem (the interface) instead.
-        // We need to search from the PARENT of ownerRem (e.g., RemB) to find sibling
-        // descendants (e.g., RemC -> RemInterfaceC) that extend sourceProperty.
-        const ownerParent = await ownerRem.getParentRem();
-        if (ownerParent) {
-          const updatedCount = await updateDescendantInterfaceReferences(plugin, ownerRem, ownerParent, sourceProperty);
-          
-          // Show toast message if any descendant interfaces were updated
-          if (updatedCount > 0) {
-            await plugin.app.toast(
-              `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'interface' : 'interfaces'} to extend the new interface.`
-            );
-          }
+        // to now extend this newly created interface instead.
+        const updatedCount = await updateDescendantInterfaceReferences(plugin, newRem, ownerRem, sourceProperty);
+        
+        // Show toast message if any descendant interfaces were updated
+        if (updatedCount > 0) {
+          await plugin.app.toast(
+            `Updated ${updatedCount} descendant ${updatedCount === 1 ? 'interface' : 'interfaces'} to extend the new interface.`
+          );
         }
       }
       
