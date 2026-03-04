@@ -43,6 +43,7 @@ type GraphNodeData = {
   kind: "rem" | "property" | "interface" | "virtualProperty" | "virtualInterface";
   sourcePropertyId?: string;  // For virtual nodes: the ancestor property this inherits from
   ownerRemId?: string;        // For virtual nodes: the REM that should implement this
+  sourceRemLabel?: string;    // For virtual nodes: the label of the ancestor REM that owns the source property (for hover display)
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
@@ -89,6 +90,8 @@ type VirtualAttributeInfo = {
   label: string;                 // Same label as source property
   sourcePropertyId: string;      // The ancestor property this inherits from
   ownerRemId: string;            // The REM that should implement this
+  sourceRemId: string;           // The ancestor REM that owns the source property
+  sourceRemLabel: string;        // The label of the ancestor REM (for hover display)
   children: VirtualAttributeInfo[];  // Children from the source property (for expandable virtual interfaces)
 };
 
@@ -321,8 +324,9 @@ function InterfaceFlowNode({ data }: NodeProps<GraphNodeData>) {
 }
 
 function VirtualPropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
+  const hoverText = data.sourceRemLabel ? `${data.sourceRemLabel}` : undefined;
   return (
-    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }}>
+    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }} title={hoverText}>
       <Handle
         type="target"
         position={Position.Top}
@@ -1083,24 +1087,28 @@ async function integrateAttributeGraph(
     nodes.filter((node) => node.data.kind === "rem").map((node) => [node.id, node])
   );
 
-  for (const [ownerId, attributeList] of Object.entries(attributeData.byOwner)) {
-    const ownerNode = baseNodeMap.get(ownerId);
-    if (!ownerNode || attributeList.length === 0) {
-      continue;
+  // Only show regular attributes for properties, not for interfaces
+  // (interfaces should only show virtual/inherited ones)
+  if (kind === 'property') {
+    for (const [ownerId, attributeList] of Object.entries(attributeData.byOwner)) {
+      const ownerNode = baseNodeMap.get(ownerId);
+      if (!ownerNode || attributeList.length === 0) {
+        continue;
+      }
+      layoutAttributeTree(
+        ownerNode,
+        attributeList,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        hiddenAttributes,
+        attributeData,
+        collapsed,
+        kind,
+        nodePositions
+      );
     }
-    layoutAttributeTree(
-      ownerNode,
-      attributeList,
-      nodes,
-      edges,
-      existingNodeIds,
-      existingEdgeIds,
-      hiddenAttributes,
-      attributeData,
-      collapsed,
-      kind,
-      nodePositions
-    );
   }
 
   // Build and layout virtual (unimplemented) attributes
@@ -1427,6 +1435,19 @@ function buildVirtualAttributeData(
 ): VirtualAttributeData {
   const byOwner: Record<string, VirtualAttributeInfo[]> = {};
 
+  // Build a map from ancestorId to ancestorName by traversing the hierarchy trees
+  const ancestorIdToName: Record<string, string> = {};
+  const buildAncestorNameMap = (nodes: HierarchyNode[]) => {
+    for (const node of nodes) {
+      ancestorIdToName[node.id] = node.name;
+      if (node.children?.length) {
+        buildAncestorNameMap(node.children);
+      }
+    }
+  };
+  buildAncestorNameMap(ancestors);
+  buildAncestorNameMap(descendants);
+
   // First, build a map of property extends relationships for quick lookup
   // (moved up so we can use it in collectImplementedIds for transitive lookup)
   const propertyExtendsMap: Record<string, string[]> = {};
@@ -1449,13 +1470,15 @@ function buildVirtualAttributeData(
   };
 
   // Helper to recursively build virtual children from AttributeNodeInfo children
-  const buildVirtualChildren = (children: AttributeNodeInfo[], ownerRemId: string): VirtualAttributeInfo[] => {
+  const buildVirtualChildren = (children: AttributeNodeInfo[], ownerRemId: string, sourceRemId: string, sourceRemLabel: string): VirtualAttributeInfo[] => {
     return children.map(child => ({
       id: `virtual:${ownerRemId}:${child.id}`,
       label: child.label,
       sourcePropertyId: child.id,
       ownerRemId: ownerRemId,
-      children: buildVirtualChildren(child.children, ownerRemId),
+      sourceRemId: sourceRemId,
+      sourceRemLabel: sourceRemLabel,
+      children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel),
     }));
   };
 
@@ -1601,6 +1624,25 @@ function buildVirtualAttributeData(
     return result;
   };
 
+  // Helper to check if any of a rem's children extend a given interface (directly or transitively)
+  const remChildExtendsInterface = (remId: string, interfaceId: string): boolean => {
+    const remChildren = attributeData.byOwner[remId] || [];
+    for (const child of remChildren) {
+      // Check if this child directly extends the interface
+      if (child.extends.includes(interfaceId)) {
+        return true;
+      }
+      // Check if this child extends something that transitively extends the interface
+      for (const extId of child.extends) {
+        const transitiveAncestors = getPropertyAncestors(extId);
+        if (transitiveAncestors.has(interfaceId)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // Now for each REM, find which ancestor properties are NOT implemented
   // We need to only show the "closest" unimplemented property in the chain
   // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
@@ -1635,17 +1677,24 @@ function buildVirtualAttributeData(
         // (a rem should not implement its descendants as interfaces)
         if (remDescendantSet.has(prop.id)) continue;
         
+        // Skip if this rem already has a child that extends this interface
+        // (the interface is already implemented through the child)
+        if (remChildExtendsInterface(remId, prop.id)) continue;
+        
         // Check if this property (or something extending it) is implemented
         if (!implemented.has(prop.id)) {
           // Check if we already have a virtual node for this property on this REM
           const existingVirtual = candidateVirtualAttrs.find(v => v.sourcePropertyId === prop.id);
           if (!existingVirtual) {
+            const sourceRemLabel = ancestorIdToName[ancestorId] || ancestorId;
             candidateVirtualAttrs.push({
               id: `virtual:${remId}:${prop.id}`,
               label: prop.label,
               sourcePropertyId: prop.id,
               ownerRemId: remId,
-              children: buildVirtualChildren(prop.children, remId),
+              sourceRemId: ancestorId,
+              sourceRemLabel: sourceRemLabel,
+              children: buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel),
             });
           }
         }
@@ -1724,6 +1773,7 @@ function layoutVirtualAttributeDescendants(
       kind: virtualKind,
       sourcePropertyId: info.sourcePropertyId,
       ownerRemId: info.ownerRemId,
+      sourceRemLabel: info.sourceRemLabel,
     };
 
     if (!childNode) {
@@ -1857,6 +1907,7 @@ function layoutVirtualAttributes(
         kind: virtualKind,
         sourcePropertyId: info.sourcePropertyId,
         ownerRemId: info.ownerRemId,
+        sourceRemLabel: info.sourceRemLabel,
       },
       style: nodeStyle,
       draggable: true,
@@ -2074,7 +2125,7 @@ function MindmapWidget() {
             );
             const [properties, interfaces] = await Promise.all([
               buildAttributeData(plugin, remsForAttributes, true),
-              buildAttributeData(plugin, remsForAttributes, false, rem._id),
+              buildAttributeData(plugin, remsForAttributes, false),
             ]);
 
             if (cancelled) return;
@@ -2234,7 +2285,7 @@ function MindmapWidget() {
         );
         const [properties, interfaces] = await Promise.all([
           buildAttributeData(plugin, remsForAttributes, true),
-          buildAttributeData(plugin, remsForAttributes, false, rem._id),
+          buildAttributeData(plugin, remsForAttributes, false),
         ]);
 
         // 1.3
