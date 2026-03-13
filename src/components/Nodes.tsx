@@ -94,12 +94,29 @@ export const VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED: React.CSSProperties = {
   background: "#c9c9c9",
 };
 
+// Virtual Interface with "Interface" tag - greenish to indicate it's a true interface
+export const VIRTUAL_INTERFACE_TAGGED_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#d1fae5",  // Light green background
+  border: "1px dashed #10b981",  // Green dashed border
+  fontSize: 12,
+  minWidth: 160,
+  opacity: 0.8,
+  fontStyle: "italic",
+};
+
+export const VIRTUAL_INTERFACE_TAGGED_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...VIRTUAL_INTERFACE_TAGGED_NODE_STYLE,
+  background: "#a7f3d0",
+};
+
 // Helper to get the appropriate style with optional width
 export function getNodeStyle(
   kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface',
   isCollapsed: boolean,
   isCenter: boolean = false,
-  width?: number
+  width?: number,
+  isInterfaceTagged?: boolean
 ): React.CSSProperties {
   let style: React.CSSProperties;
   
@@ -115,6 +132,8 @@ export function getNodeStyle(
     style = isCollapsed ? INTERFACE_NODE_STYLE_COLLAPSED : INTERFACE_NODE_STYLE;
   } else if (kind === 'virtualProperty') {
     style = isCollapsed ? VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_PROPERTY_NODE_STYLE;
+  } else if (kind === 'virtualInterface' && isInterfaceTagged) {
+    style = isCollapsed ? VIRTUAL_INTERFACE_TAGGED_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_TAGGED_NODE_STYLE;
   } else {
     style = isCollapsed ? VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_NODE_STYLE;
   }

@@ -463,6 +463,21 @@ export async function hasTag(plugin: RNPlugin, rem: Rem, tagName: string): Promi
 }
 
 /**
+ * Returns the tag Rem instance if `rem` has a tag with the given name, otherwise undefined.
+ * This can be used with addTag to copy a tag to another rem.
+ */
+export async function getTag(plugin: RNPlugin, rem: Rem, tagName: string): Promise<Rem | undefined> {
+  const tagRems = await rem.getTagRems();
+  for (const tagRem of tagRems) {
+    const text = await getRemText(plugin, tagRem);
+    if (text.trim().toLowerCase() === tagName.toLowerCase()) {
+      return tagRem;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Returns true if `candidateDescendant` is already a descendant of `ancestorRem` in the Rem hierarchy,
  * by walking parent links and avoiding cycles.
  */
