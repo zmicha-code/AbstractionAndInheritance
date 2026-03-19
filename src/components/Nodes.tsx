@@ -110,9 +110,39 @@ export const VIRTUAL_INTERFACE_TAGGED_NODE_STYLE_COLLAPSED: React.CSSProperties 
   background: "#a7f3d0",
 };
 
+// Direct Property Node Styles (interfaces with Property tag) - purple theme
+export const DIRECT_PROPERTY_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#f3e8ff",  // Light purple background
+  border: "1px solid #a855f7",  // Purple border
+  fontSize: 12,
+  minWidth: 160,
+};
+
+export const DIRECT_PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...DIRECT_PROPERTY_NODE_STYLE,
+  background: "#d8b4fe",
+};
+
+// Virtual Direct Property Node Styles (unimplemented interfaces with Property tag)
+export const VIRTUAL_DIRECT_PROPERTY_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#ede9fe",  // Very light purple
+  border: "1px dashed #a855f7",  // Purple dashed border
+  fontSize: 12,
+  minWidth: 160,
+  opacity: 0.7,
+  fontStyle: "italic",
+};
+
+export const VIRTUAL_DIRECT_PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...VIRTUAL_DIRECT_PROPERTY_NODE_STYLE,
+  background: "#c4b5fd",
+};
+
 // Helper to get the appropriate style with optional width
 export function getNodeStyle(
-  kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface',
+  kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty',
   isCollapsed: boolean,
   isCenter: boolean = false,
   width?: number,
@@ -130,6 +160,10 @@ export function getNodeStyle(
     style = isCollapsed ? PROPERTY_NODE_STYLE_COLLAPSED : PROPERTY_NODE_STYLE;
   } else if (kind === 'interface') {
     style = isCollapsed ? INTERFACE_NODE_STYLE_COLLAPSED : INTERFACE_NODE_STYLE;
+  } else if (kind === 'directProperty') {
+    style = isCollapsed ? DIRECT_PROPERTY_NODE_STYLE_COLLAPSED : DIRECT_PROPERTY_NODE_STYLE;
+  } else if (kind === 'virtualDirectProperty') {
+    style = isCollapsed ? VIRTUAL_DIRECT_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_DIRECT_PROPERTY_NODE_STYLE;
   } else if (kind === 'virtualProperty') {
     style = isCollapsed ? VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_PROPERTY_NODE_STYLE;
   } else if (kind === 'virtualInterface' && isInterfaceTagged) {

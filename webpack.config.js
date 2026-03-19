@@ -67,6 +67,13 @@ const config = {
       const widgetName = queryParams["widgetName"];
       if (widgetName == undefined) {document.body.innerHTML+="Widget ID not specified."}
 
+      // Load CSS
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = widgetName+"${SANDBOX_SUFFIX}.css";
+      document.head.appendChild(link);
+
+      // Load JS
       const s = document.createElement('script');
       s.type = "module";
       s.src = widgetName+"${SANDBOX_SUFFIX}.js";
@@ -85,6 +92,7 @@ const config = {
         return !file.chunk.name.includes(SANDBOX_SUFFIX) ? 'const IMPORT_META=import.meta;' : '';
       },
       raw: true,
+      test: /\.js$/,  // ← ADD THIS LINE to only apply banner to JS files
     }),
     new CopyPlugin({
       patterns: [
