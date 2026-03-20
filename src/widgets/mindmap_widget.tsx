@@ -1096,8 +1096,22 @@ async function integrateAttributeGraph(
     nodes.filter((node) => node.data.kind === "rem").map((node) => [node.id, node])
   );
 
-  // Only show regular attributes for properties and directProperties, not for interfaces
-  // (interfaces should only show virtual/inherited ones)
+  // Helper to collect all IDs from a forest (flattened)
+  const collectAllIdsFromForest = (forest: HierarchyNode[]): string[] => {
+    const ids: string[] = [];
+    const stack = [...forest];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      ids.push(node.id);
+      if (node.children?.length) {
+        stack.push(...node.children);
+      }
+    }
+    return ids;
+  };
+
+  // Show regular attributes for properties and directProperties
+  // For interfaces, only show on ancestor nodes (interface definitions)
   if (kind === 'property' || kind === 'directProperty') {
     for (const [ownerId, attributeList] of Object.entries(attributeData.byOwner)) {
       const ownerNode = baseNodeMap.get(ownerId);
@@ -1107,6 +1121,41 @@ async function integrateAttributeGraph(
       layoutAttributeTree(
         ownerNode,
         attributeList,
+        nodes,
+        edges,
+        existingNodeIds,
+        existingEdgeIds,
+        hiddenAttributes,
+        attributeData,
+        collapsed,
+        kind,
+        nodePositions
+      );
+    }
+  } else if (kind === 'interface' && ancestors && descendants && centerId) {
+    // For interface view, show interface DEFINITIONS on ancestor nodes
+    // (descendants only get virtual/unimplemented interfaces)
+    const ancestorIds = collectAllIdsFromForest(ancestors);
+    const descendantIds = collectAllIdsFromForest(descendants);
+    const ancestorIdSet = new Set(ancestorIds);
+    // Build set of all hierarchy REM IDs to filter them out from interface lists
+    const allHierarchyRemIds = new Set([centerId, ...ancestorIds, ...descendantIds]);
+    
+    for (const [ownerId, attributeList] of Object.entries(attributeData.byOwner)) {
+      // Only show interfaces for ancestor nodes (these are interface definitions)
+      if (!ancestorIdSet.has(ownerId)) continue;
+      
+      const ownerNode = baseNodeMap.get(ownerId);
+      if (!ownerNode || attributeList.length === 0) continue;
+      
+      // Filter out interfaces that are actually hierarchy REMs (descendants appearing as structural children)
+      const actualInterfaces = attributeList.filter(attr => !allHierarchyRemIds.has(attr.id));
+      
+      if (actualInterfaces.length === 0) continue;
+      
+      layoutAttributeTree(
+        ownerNode,
+        actualInterfaces,
         nodes,
         edges,
         existingNodeIds,
@@ -1296,6 +1345,83 @@ async function integrateAttributeGraph(
           }
         }
       }
+  }
+
+  // Create edges from interface nodes (green) to REM nodes (grey) that extend them
+  // This connects ancestor interface definitions to descendant REMs that implement them
+  if (kind === 'interface') {
+    const remNodes = nodes.filter(n => n.type === "remNode");
+    const interfaceNodeIds = new Set(
+      nodes.filter(n => n.type === "interfaceNode").map(n => {
+        // Extract the actual interface ID from the node ID (e.g., "interface:xyz" -> "xyz")
+        const data = n.data as GraphNodeData;
+        return data.remId;
+      })
+    );
+    
+    for (const remNode of remNodes) {
+      const remId = remNode.id;
+      
+      // Skip if this REM is also rendered as an interface node (handled by attr-ext loop)
+      if (existingNodeIds.has(attributeNodeId(kind, remId))) {
+        continue;
+      }
+      
+      let rem: PluginRem | null = null;
+      try {
+        rem = await plugin.rem.findOne(remId) as PluginRem | null;
+      } catch (_) {
+        continue;
+      }
+      if (!rem) continue;
+      
+      // Get what this REM extends
+      let extendsParents: PluginRem[] = [];
+      try {
+        extendsParents = await getExtendsParents(plugin, rem);
+      } catch (_) {
+        continue;
+      }
+      
+      for (const parent of extendsParents) {
+        // If parent is visible as a REM node, skip creating interface-to-rem edge
+        // The REM hierarchy edge already connects them, and the parent will have its own interface-to-rem edge if needed
+        if (existingNodeIds.has(parent._id)) {
+          continue;
+        }
+        
+        // Check if this parent is visible as an interface node, or find closest visible ancestor
+        let visibleInterfaceId: string | null = parent._id;
+        const directInterfaceNodeId = attributeNodeId(kind, parent._id);
+        
+        if (!existingNodeIds.has(directInterfaceNodeId) || hiddenAttributes?.has(parent._id)) {
+          // Parent interface is not visible, find closest visible ancestor
+          visibleInterfaceId = await findClosestVisibleAncestor(parent._id, existingNodeIds, kind);
+        }
+        
+        if (visibleInterfaceId && interfaceNodeIds.has(visibleInterfaceId)) {
+          const interfaceNodeId = attributeNodeId(kind, visibleInterfaceId);
+          if (existingNodeIds.has(interfaceNodeId)) {
+            const edgeId = `interface-to-rem:${visibleInterfaceId}->${remId}`;
+            // Also check if an attr-ext edge already exists for this connection
+            const attrExtEdgeId = `attr-ext:${visibleInterfaceId}->${remId}`;
+            if (!existingEdgeIds.has(edgeId) && !existingEdgeIds.has(attrExtEdgeId)) {
+              edges.push({
+                id: edgeId,
+                source: interfaceNodeId,
+                target: remId,
+                sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+                targetHandle: REM_TARGET_LEFT_HANDLE,
+                type: "randomOffset",
+                markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+                style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
+              });
+              existingEdgeIds.add(edgeId);
+            }
+          }
+        }
+      }
+    }
   }
 
   return { nodes, edges };
@@ -1584,6 +1710,11 @@ function buildVirtualAttributeData(
   const allAncestorIds = collectAllIdsFromForest(ancestors);
   const allDescendantIds = collectAllIdsFromForest(descendants);
 
+  // Build a set of ALL hierarchy REM IDs (ancestors + center + descendants)
+  // This is used to distinguish actual interface attributes from hierarchy descendants
+  // that appear as structural children in attributeData.byOwner
+  const allHierarchyRemIds = new Set([centerId, ...allAncestorIds, ...allDescendantIds]);
+
   // Compute the TRANSITIVE ancestors for a given node using the pre-built parent map
   // This correctly handles the DAG structure where nodes may have multiple parents
   const computeTransitiveAncestors = (nodeId: string): Set<string> => {
@@ -1613,8 +1744,12 @@ function buildVirtualAttributeData(
   // Build implementedByOwner: for each rem, collect what it "implements" through:
   // 1. Its structural children (interfaces) and their extends
   // 2. Its own extends relationships (what it directly inherits from via hierarchy/extends)
+  // IMPORTANT: Filter out hierarchy descendants (REMs in the tree) from attrs
+  // because a child REM implementing an interface should NOT mark it as implemented for the parent
   for (const [ownerId, attrs] of Object.entries(attributeData.byOwner)) {
-    implementedByOwner[ownerId] = collectImplementedIds(attrs);
+    // Filter out any attrs that are actually hierarchy REMs (not interface attributes)
+    const actualInterfaceAttrs = attrs.filter(attr => !allHierarchyRemIds.has(attr.id));
+    implementedByOwner[ownerId] = collectImplementedIds(actualInterfaceAttrs);
   }
   
   // Also add each rem's transitive ancestors (via extends/hierarchy) to its implemented set
@@ -1685,25 +1820,6 @@ function buildVirtualAttributeData(
     return result;
   };
 
-  // Helper to check if any of a rem's children extend a given interface (directly or transitively)
-  const remChildExtendsInterface = (remId: string, interfaceId: string): boolean => {
-    const remChildren = attributeData.byOwner[remId] || [];
-    for (const child of remChildren) {
-      // Check if this child directly extends the interface
-      if (child.extends.includes(interfaceId)) {
-        return true;
-      }
-      // Check if this child extends something that transitively extends the interface
-      for (const extId of child.extends) {
-        const transitiveAncestors = getPropertyAncestors(extId);
-        if (transitiveAncestors.has(interfaceId)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-
   // Now for each REM, find which ancestor properties are NOT implemented
   // We need to only show the "closest" unimplemented property in the chain
   // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
@@ -1724,6 +1840,31 @@ function buildVirtualAttributeData(
     
     // Build a set of this rem's descendants
     const remDescendantSet = computeTransitiveDescendants(remId);
+
+    // Helper: Get all base interfaces that are "covered" by a REM's direct interface children
+    // These are interfaces that should NOT appear as virtual because they're already implemented
+    // via an interface child that extends them (directly or transitively)
+    const getImplementedBaseInterfaces = (): Set<string> => {
+      const implementedBases = new Set<string>();
+      const remChildren = attributeData.byOwner[remId] || [];
+      
+      for (const child of remChildren) {
+        // Add all interfaces this child extends (direct and transitive)
+        for (const extId of child.extends) {
+          implementedBases.add(extId);
+          // Add transitive ancestors (InterfaceA' extends InterfaceA, InterfaceA extends InterfaceZ...)
+          const transitiveAncestors = getPropertyAncestors(extId);
+          for (const ancestorId of transitiveAncestors) {
+            implementedBases.add(ancestorId);
+          }
+        }
+      }
+      
+      return implementedBases;
+    };
+
+    // Compute implemented base interfaces once per REM
+    const implementedBaseInterfaces = getImplementedBaseInterfaces();
 
     // First pass: collect all unimplemented properties as candidates
     for (const ancestorId of ancestorIds) {
@@ -1747,7 +1888,7 @@ function buildVirtualAttributeData(
         
         // Skip if this rem already has a child that extends this interface
         // (the interface is already implemented through the child)
-        if (remChildExtendsInterface(remId, prop.id)) continue;
+        if (implementedBaseInterfaces.has(prop.id)) continue;
         
         // Check if this property (or something extending it) is implemented
         if (!implemented.has(prop.id)) {
