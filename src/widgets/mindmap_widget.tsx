@@ -192,9 +192,37 @@ const BOTTOM_SOURCE_HANDLE_STYLE: React.CSSProperties = {
   transform: 'translate(-50%, 50%)',
 };
 
-function getRandomColor() {
-  // Generates a random hex color
-  return "#" + Math.floor(Math.random()*16777215).toString(16);
+// Curated palette of visually distinct colors for edge coloring
+const EDGE_COLOR_PALETTE = [
+  "#e63946", // Red
+  "#f4a261", // Orange
+  "#e9c46a", // Yellow
+  "#2a9d8f", // Teal
+  "#264653", // Dark blue
+  "#9b5de5", // Purple
+  "#00bbf9", // Cyan
+  "#00f5d4", // Mint
+  "#f15bb5", // Pink
+  "#fee440", // Bright yellow
+  "#8338ec", // Violet
+  "#3a86ff", // Blue
+  "#ff006e", // Magenta
+  "#fb5607", // Bright orange
+  "#06d6a0", // Green
+];
+
+/**
+ * Returns a deterministic color for a given node ID.
+ * All edges leaving the same node will have the same color.
+ */
+function getColorForNode(nodeId: string): string {
+  let hash = 0;
+  for (let i = 0; i < nodeId.length; i++) {
+    hash = ((hash << 5) - hash) + nodeId.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  const index = Math.abs(hash) % EDGE_COLOR_PALETTE.length;
+  return EDGE_COLOR_PALETTE[index];
 }
 
 function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty'): number {
@@ -590,15 +618,16 @@ function layoutSubtreeHorizontal(
   }
 
   if (!edges.some((edge) => edge.id === edgeId)) {
+    const sourceNodeId = relation === "ancestor" ? node.id : parentId;
     edges.push({
       id: edgeId,
-      source: relation === "ancestor" ? node.id : parentId,
+      source: sourceNodeId,
       target: relation === "ancestor" ? parentId : node.id,
       sourceHandle,
       targetHandle,
       type: "randomOffset",
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-      style: { stroke: getRandomColor() }
+      style: { stroke: getColorForNode(sourceNodeId) }
     });
   }
 
@@ -1049,7 +1078,7 @@ function layoutAttributeDescendants(
         targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-        style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
+        style: { stroke: getColorForNode(parentNode.id), strokeDasharray: "4 2" }
       });
       existingEdgeIds.add(linkEdgeId);
     }
@@ -1339,7 +1368,7 @@ async function integrateAttributeGraph(
               targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
               type: "randomOffset",
               markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-              style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
+              style: { stroke: getColorForNode(sourceNodeId), strokeDasharray: "4 2" }
             });
             existingEdgeIds.add(edgeId);
           }
@@ -1414,7 +1443,7 @@ async function integrateAttributeGraph(
                 targetHandle: REM_TARGET_LEFT_HANDLE,
                 type: "randomOffset",
                 markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-                style: { stroke: getRandomColor(), strokeDasharray: "4 2" }
+                style: { stroke: getColorForNode(interfaceNodeId), strokeDasharray: "4 2" }
               });
               existingEdgeIds.add(edgeId);
             }
@@ -1459,7 +1488,7 @@ async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: G
           targetHandle,
           type: "randomOffset",
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-          style: { stroke: getRandomColor() }
+          style: { stroke: getColorForNode(rem._id) }
         });
       }
     }
