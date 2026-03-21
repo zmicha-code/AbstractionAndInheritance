@@ -855,6 +855,48 @@ async function createGraphData(
       );
     }
     
+    // Recursively fetch parents for any parent IDs not yet in childToParentsMap
+    // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
+    // even when InterfaceB is not in the current hierarchy tree
+    let newParentIds = new Set<string>();
+    for (const parentIds of Object.values(childToParentsMap)) {
+      for (const parentId of parentIds) {
+        if (!childToParentsMap[parentId]) {
+          newParentIds.add(parentId);
+        }
+      }
+    }
+    
+    while (newParentIds.size > 0) {
+      const toResolve = [...newParentIds];
+      newParentIds = new Set();
+      
+      for (const parentId of toResolve) {
+        if (childToParentsMap[parentId]) continue;
+        
+        const parentRem = await plugin.rem.findOne(parentId);
+        if (!parentRem) {
+          // Mark as resolved with empty parents to avoid infinite loop
+          childToParentsMap[parentId] = new Set();
+          continue;
+        }
+        
+        const grandparents = await getParentClass(plugin, parentRem);
+        childToParentsMap[parentId] = new Set(
+          grandparents
+            .filter(p => p)
+            .map(p => p._id)
+        );
+        
+        // Queue any newly discovered parents
+        for (const gp of grandparents) {
+          if (gp && !childToParentsMap[gp._id]) {
+            newParentIds.add(gp._id);
+          }
+        }
+      }
+    }
+    
     virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
   }
 
@@ -1250,6 +1292,48 @@ async function integrateAttributeGraph(
           .filter(p => p)
           .map(p => p._id)
       );
+    }
+    
+    // Recursively fetch parents for any parent IDs not yet in childToParentsMap
+    // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
+    // even when InterfaceB is not in the current hierarchy tree
+    let newParentIds = new Set<string>();
+    for (const parentIds of Object.values(childToParentsMap)) {
+      for (const parentId of parentIds) {
+        if (!childToParentsMap[parentId]) {
+          newParentIds.add(parentId);
+        }
+      }
+    }
+    
+    while (newParentIds.size > 0) {
+      const toResolve = [...newParentIds];
+      newParentIds = new Set();
+      
+      for (const parentId of toResolve) {
+        if (childToParentsMap[parentId]) continue;
+        
+        const parentRem = await plugin.rem.findOne(parentId);
+        if (!parentRem) {
+          // Mark as resolved with empty parents to avoid infinite loop
+          childToParentsMap[parentId] = new Set();
+          continue;
+        }
+        
+        const grandparents = await getParentClass(plugin, parentRem);
+        childToParentsMap[parentId] = new Set(
+          grandparents
+            .filter(p => p)
+            .map(p => p._id)
+        );
+        
+        // Queue any newly discovered parents
+        for (const gp of grandparents) {
+          if (gp && !childToParentsMap[gp._id]) {
+            newParentIds.add(gp._id);
+          }
+        }
+      }
     }
     
     const virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
@@ -2590,6 +2674,48 @@ function MindmapWidget() {
         for (const [remIdKey, remRef] of descendantRemRefs) {
           const parents = await getParentClass(plugin, remRef);
           childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
+        }
+
+        // Recursively fetch parents for any parent IDs not yet in childToParentsMap
+        // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
+        // even when InterfaceB is not in the current hierarchy tree
+        let newParentIds = new Set<string>();
+        for (const parentIds of Object.values(childToParentsMap)) {
+          for (const parentId of parentIds) {
+            if (!childToParentsMap[parentId]) {
+              newParentIds.add(parentId);
+            }
+          }
+        }
+        
+        while (newParentIds.size > 0) {
+          const toResolve = [...newParentIds];
+          newParentIds = new Set();
+          
+          for (const parentId of toResolve) {
+            if (childToParentsMap[parentId]) continue;
+            
+            const parentRem = await plugin.rem.findOne(parentId);
+            if (!parentRem) {
+              // Mark as resolved with empty parents to avoid infinite loop
+              childToParentsMap[parentId] = new Set();
+              continue;
+            }
+            
+            const grandparents = await getParentClass(plugin, parentRem);
+            childToParentsMap[parentId] = new Set(
+              grandparents
+                .filter(p => p)
+                .map(p => p._id)
+            );
+            
+            // Queue any newly discovered parents
+            for (const gp of grandparents) {
+              if (gp && !childToParentsMap[gp._id]) {
+                newParentIds.add(gp._id);
+              }
+            }
+          }
         }
 
         // Helper to recursively collect virtual IDs with children
