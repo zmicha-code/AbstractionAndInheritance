@@ -12,7 +12,9 @@ function getRandomOffset(edgeId: string): number {
     hash = hash & hash; // Convert to 32bit integer
   }
   // Convert to 0.10-0.75 range (10% to 75% of the distance)
-  return 0.10 + (Math.abs(hash) % 1000) / 1538.46;
+  //return 0.10 + (Math.abs(hash) % 1000) / 1538.46;
+
+  return 0.12;
 }
 
 /**
