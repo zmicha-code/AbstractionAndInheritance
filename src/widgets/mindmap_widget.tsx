@@ -110,7 +110,7 @@ const MINDMAP_STATE_KEY = "mindmap_widget_state";
 type MindMapState = {
   loadedRemId: string;
   loadedRemName: string;
-  attributeType: 'property' | 'interface' | 'directProperty';
+  attributeType: 'property' | 'interface';
   collapsedNodes: string[];
   hiddenAttributes: string[];
   hiddenVirtualAttributes: string[];
@@ -774,7 +774,9 @@ async function createGraphData(
   hiddenAttributes: Set<string>,
   hiddenVirtualAttributes: Set<string>,
   nodePositions: Map<string, { x: number; y: number }>,
-  kind: 'property' | 'interface' | 'directProperty'
+  kind: 'property' | 'interface' | 'directProperty',
+  secondaryAttributeData?: AttributeData,
+  secondaryKind?: 'property' | 'interface' | 'directProperty'
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   const centerWidth = estimateNodeWidth(centerLabel, 'rem');
   const centerStored = nodePositions?.get(centerId);
@@ -934,7 +936,17 @@ async function createGraphData(
     hiddenVirtualAttributes
   );
 
-  return integrateAttributeGraph(plugin, nodes, edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants);
+  // For combined property view, lay out in order: directProperty, property, virtualDirectProperty, virtualProperty
+  // First integrate secondary (directProperty) data if provided
+  let result = { nodes, edges };
+  if (secondaryAttributeData && secondaryKind) {
+    result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants);
+  }
+  
+  // Then integrate primary attribute data (property or interface)
+  result = await integrateAttributeGraph(plugin, result.nodes, result.edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants);
+  
+  return result;
 }
 
 function attributeNodeId(kind: 'property' | 'interface' | 'directProperty', attributeId: string): string {
@@ -952,7 +964,8 @@ function layoutAttributeTree(
   attributeData: AttributeData,
   collapsed: Set<string>,
   kind: 'property' | 'interface' | 'directProperty',
-  nodePositions?: Map<string, { x: number; y: number }>
+  nodePositions?: Map<string, { x: number; y: number }>,
+  existingAttrsCount: number = 0
 ) {
   const visible = hiddenAttributes ? attributes.filter((info) => !hiddenAttributes.has(info.id)) : attributes;
   if (visible.length === 0) return;
@@ -970,7 +983,7 @@ function layoutAttributeTree(
       : ownerData.kind === "rem"
       ? REM_NODE_HEIGHT_ESTIMATE
       : ATTRIBUTE_NODE_HEIGHT_ESTIMATE;
-  const baseY = ownerNode.position.y + ownerHeight + ATTRIBUTE_VERTICAL_MARGIN;
+  const baseY = ownerNode.position.y + ownerHeight + ATTRIBUTE_VERTICAL_MARGIN + existingAttrsCount * ATTRIBUTE_VERTICAL_SPACING;
   sorted.forEach((info, index) => {
     const nodeId = attributeNodeId(kind, info.id);
     if (existingNodeIds.has(nodeId)) return;
@@ -1167,6 +1180,65 @@ async function integrateAttributeGraph(
     nodes.filter((node) => node.data.kind === "rem").map((node) => [node.id, node])
   );
 
+  // Helper to count existing attribute nodes for each owner (for proper vertical stacking)
+  const countExistingAttrsForOwner = (ownerId: string): number => {
+    // Count direct attribute edges from this owner to attribute nodes
+    let count = 0;
+    for (const edge of edges) {
+      if (edge.source === ownerId && edge.id.startsWith('attr-link:')) {
+        // Check if the target node exists and is an attribute
+        const targetNode = nodes.find(n => n.id === edge.target || edge.id.includes(n.data?.remId));
+        if (targetNode) {
+          const nodeKind = (targetNode.data as GraphNodeData)?.kind;
+          if (nodeKind === 'property' || nodeKind === 'directProperty' || 
+              nodeKind === 'virtualProperty' || nodeKind === 'virtualDirectProperty') {
+            count++;
+          }
+        }
+      }
+    }
+    // Also count by looking at nodes directly if edges not yet created
+    for (const node of nodes) {
+      const data = node.data as GraphNodeData;
+      if ((data.kind === 'property' || data.kind === 'directProperty') && !data.ownerRemId) {
+        // Check if there's an edge from owner to this node
+        const hasEdge = edges.some(e => e.source === ownerId && e.id === `attr-link:${ownerId}->${data.remId}`);
+        if (hasEdge && !existingNodeIds.has(attributeNodeId(kind, data.remId))) {
+          // Already counted via edge
+        }
+      }
+      // Count virtual attributes owned by this REM
+      if ((data.kind === 'virtualProperty' || data.kind === 'virtualDirectProperty') && data.ownerRemId === ownerId) {
+        count++;
+      }
+    }
+    return count;
+  };
+
+  // Alternative simpler approach: just scan nodes for attributes belonging to owner
+  const countAttributeNodesForOwner = (ownerId: string): number => {
+    let count = 0;
+    for (const node of nodes) {
+      const data = node.data as GraphNodeData;
+      // Skip non-attribute nodes
+      if (data.kind === 'rem') continue;
+      // For virtual nodes, check ownerRemId
+      if (data.ownerRemId === ownerId) {
+        count++;
+        continue;
+      }
+      // For regular attribute nodes, check via edges
+      const hasOwnerEdge = edges.some(e => 
+        e.source === ownerId && 
+        (e.id === `attr-link:${ownerId}->${data.remId}` || e.id === `vattr-link:${ownerId}->${node.id}`)
+      );
+      if (hasOwnerEdge) {
+        count++;
+      }
+    }
+    return count;
+  };
+
   // Helper to collect all IDs from a forest (flattened)
   const collectAllIdsFromForest = (forest: HierarchyNode[]): string[] => {
     const ids: string[] = [];
@@ -1189,6 +1261,7 @@ async function integrateAttributeGraph(
       if (!ownerNode || attributeList.length === 0) {
         continue;
       }
+      const existingCount = countAttributeNodesForOwner(ownerId);
       layoutAttributeTree(
         ownerNode,
         attributeList,
@@ -1200,7 +1273,8 @@ async function integrateAttributeGraph(
         attributeData,
         collapsed,
         kind,
-        nodePositions
+        nodePositions,
+        existingCount
       );
     }
   } else if (kind === 'interface' && ancestors && descendants && centerId) {
@@ -1224,6 +1298,7 @@ async function integrateAttributeGraph(
       
       if (actualInterfaces.length === 0) continue;
       
+      const existingCount = countAttributeNodesForOwner(ownerId);
       layoutAttributeTree(
         ownerNode,
         actualInterfaces,
@@ -1235,7 +1310,8 @@ async function integrateAttributeGraph(
         attributeData,
         collapsed,
         kind,
-        nodePositions
+        nodePositions,
+        existingCount
       );
     }
   }
@@ -1353,11 +1429,9 @@ async function integrateAttributeGraph(
         continue;
       }
       
-      // Count existing (non-hidden) attributes for this owner
-      const existingAttrs = attributeData.byOwner[ownerId] || [];
-      const visibleExistingCount = hiddenAttributes
-        ? existingAttrs.filter(a => !hiddenAttributes.has(a.id)).length
-        : existingAttrs.length;
+      // Count ALL existing attribute nodes for this owner (across all kinds)
+      // This ensures virtual properties appear below direct properties + virtual direct properties
+      const visibleExistingCount = countAttributeNodesForOwner(ownerId, nodes);
       
       layoutVirtualAttributes(
         ownerNode,
@@ -2343,7 +2417,7 @@ function MindmapWidget() {
   const [directPropertyData, setDirectPropertyData] = useState<AttributeData | null>(null);
   const [hiddenAttributes, setHiddenAttributes] = useState<Set<string>>(() => new Set<string>());
   const [hiddenVirtualAttributes, setHiddenVirtualAttributes] = useState<Set<string>>(() => new Set<string>());
-  const [attributeType, setAttributeType] = useState<'property' | 'interface' | 'directProperty'>('property');
+  const [attributeType, setAttributeType] = useState<'property' | 'interface'>('property');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -2549,7 +2623,12 @@ function MindmapWidget() {
 
   const updateGraph = useCallback(async () => {
     if (!loadedRemId) return;
-    const attrData = attributeType === 'property' ? propertyData : attributeType === 'interface' ? interfaceData : directPropertyData;
+    // When attributeType is 'property', use both propertyData and directPropertyData
+    const primaryData = attributeType === 'property' ? propertyData : interfaceData;
+    const secondaryData = attributeType === 'property' ? directPropertyData : undefined;
+    const primaryKind: 'property' | 'interface' | 'directProperty' = attributeType === 'property' ? 'property' : 'interface';
+    const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = attributeType === 'property' ? 'directProperty' : undefined;
+    
     const graph = await createGraphData(
       plugin,
       loadedRemId,
@@ -2557,11 +2636,13 @@ function MindmapWidget() {
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
-      attrData ?? undefined,
+      primaryData ?? undefined,
       hiddenAttributes,
       hiddenVirtualAttributes,
       nodePositionsRef.current,
-      attributeType
+      primaryKind,
+      secondaryData ?? undefined,
+      secondaryKind
     );
     const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
     
@@ -2969,8 +3050,11 @@ function MindmapWidget() {
     if (!loadedRemId) {
       return;
     }
-    const currentData = attributeType === 'property' ? propertyData : attributeType === 'interface' ? interfaceData : directPropertyData;
-    if (!currentData) {
+    // When attributeType is 'property', use both propertyData and directPropertyData
+    const primaryData = attributeType === 'property' ? propertyData : interfaceData;
+    const secondaryData = attributeType === 'property' ? directPropertyData : undefined;
+    
+    if (!primaryData) {
       return;
     }
     const oldHiddenSize = hiddenAttributes.size;
@@ -2981,8 +3065,13 @@ function MindmapWidget() {
       // Store offsets for regular attributes before hiding
       nodes.forEach((node) => {
         const data = node.data as GraphNodeData;
-        if (data?.kind === attributeType) {
-          const detail = currentData.byId[data.remId];
+        // Check for both 'property' and 'directProperty' kinds when in property mode
+        const isRelevantKind = attributeType === 'property' 
+          ? (data?.kind === 'property' || data?.kind === 'directProperty')
+          : data?.kind === attributeType;
+        if (isRelevantKind) {
+          const relevantData = data?.kind === 'directProperty' ? secondaryData : primaryData;
+          const detail = relevantData?.byId[data.remId];
           if (detail) {
             const ownerNode = nodes.find((n) => n.id === detail.ownerNodeId);
             if (ownerNode) {
@@ -2995,15 +3084,22 @@ function MindmapWidget() {
       });
     }
     
-    // Toggle regular attributes
-    const nextHidden = !allHidden ? new Set(Object.keys(currentData.byId)) : new Set<string>();
+    // Toggle regular attributes - combine IDs from both data sets when in property mode
+    let allAttrIds = Object.keys(primaryData.byId);
+    if (secondaryData) {
+      allAttrIds = [...allAttrIds, ...Object.keys(secondaryData.byId)];
+    }
+    const nextHidden = !allHidden ? new Set(allAttrIds) : new Set<string>();
     
     // Toggle virtual attributes - collect all virtual attribute IDs from current nodes
-    const virtualKind = attributeType === 'property' ? 'virtualProperty' : attributeType === 'interface' ? 'virtualInterface' : 'virtualDirectProperty';
+    // For property mode, collect both virtualProperty and virtualDirectProperty
+    const virtualKinds: GraphNodeData['kind'][] = attributeType === 'property' 
+      ? ['virtualProperty', 'virtualDirectProperty']
+      : ['virtualInterface'];
     const allVirtualIds = nodes
       .filter(node => {
         const data = node.data as GraphNodeData;
-        return data.kind === virtualKind;
+        return virtualKinds.includes(data.kind);
       })
       .map(node => node.id);
     
@@ -3012,6 +3108,9 @@ function MindmapWidget() {
       ? new Set([...allVirtualIds, ...hiddenVirtualAttributes])
       : new Set<string>();
     
+    const primaryKind: 'property' | 'interface' | 'directProperty' = attributeType === 'property' ? 'property' : 'interface';
+    const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = attributeType === 'property' ? 'directProperty' : undefined;
+    
     const graph = await createGraphData(
       plugin,
       loadedRemId,
@@ -3019,20 +3118,27 @@ function MindmapWidget() {
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
-      currentData,
+      primaryData,
       nextHidden,
       nextHiddenVirtual,
       nodePositionsRef.current,
-      attributeType
+      primaryKind,
+      secondaryData ?? undefined,
+      secondaryKind
     );
     let displayNodes = graph.nodes;
     if (allHidden && nextHidden.size === 0) {
       displayNodes = graph.nodes.map((node) => {
         const data = node.data as GraphNodeData;
-        if (data.kind !== attributeType) {
+        // Check for both kinds when in property mode
+        const isRelevantKind = attributeType === 'property'
+          ? (data.kind === 'property' || data.kind === 'directProperty')
+          : data.kind === attributeType;
+        if (!isRelevantKind) {
           return node;
         }
-        const detail = currentData.byId[data.remId];
+        const relevantData = data.kind === 'directProperty' ? secondaryData : primaryData;
+        const detail = relevantData?.byId[data.remId];
         if (!detail) {
           return node;
         }
@@ -3077,7 +3183,7 @@ function MindmapWidget() {
     storePositions
   ]);
 
-  const handleSwitchAttributes = useCallback(async (newType: 'property' | 'interface' | 'directProperty') => {
+  const handleSwitchAttributes = useCallback(async (newType: 'property' | 'interface') => {
     if (!loadedRemId) {
       return;
     }
@@ -3085,12 +3191,20 @@ function MindmapWidget() {
       return; // No change needed
     }
     const oldType = attributeType;
-    const oldData = oldType === 'property' ? propertyData : oldType === 'interface' ? interfaceData : directPropertyData;
-    if (hiddenAttributes.size === 0 && oldData) {
+    // Get old data (both primary and secondary when in property mode)
+    const oldPrimaryData = oldType === 'property' ? propertyData : interfaceData;
+    const oldSecondaryData = oldType === 'property' ? directPropertyData : undefined;
+    
+    if (hiddenAttributes.size === 0 && oldPrimaryData) {
       nodes.forEach((node) => {
         const data = node.data as GraphNodeData;
-        if (data?.kind === oldType) {
-          const detail = oldData.byId[data.remId];
+        // Check for both kinds when in property mode
+        const isRelevantKind = oldType === 'property'
+          ? (data?.kind === 'property' || data?.kind === 'directProperty')
+          : data?.kind === oldType;
+        if (isRelevantKind) {
+          const relevantData = data?.kind === 'directProperty' ? oldSecondaryData : oldPrimaryData;
+          const detail = relevantData?.byId[data.remId];
           if (detail) {
             const ownerNode = nodes.find((n) => n.id === detail.ownerNodeId);
             if (ownerNode) {
@@ -3107,8 +3221,14 @@ function MindmapWidget() {
     const nextHiddenVirtual = new Set<string>();
     setHiddenAttributes(nextHidden);
     setHiddenVirtualAttributes(nextHiddenVirtual);
-    const newData = newType === 'property' ? propertyData : newType === 'interface' ? interfaceData : directPropertyData;
-    if (!newData) return;
+    
+    // Get new data
+    const newPrimaryData = newType === 'property' ? propertyData : interfaceData;
+    const newSecondaryData = newType === 'property' ? directPropertyData : undefined;
+    const primaryKind: 'property' | 'interface' | 'directProperty' = newType === 'property' ? 'property' : 'interface';
+    const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = newType === 'property' ? 'directProperty' : undefined;
+    
+    if (!newPrimaryData) return;
     const graph = await createGraphData(
       plugin,
       loadedRemId,
@@ -3116,18 +3236,25 @@ function MindmapWidget() {
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
-      newData,
+      newPrimaryData,
       nextHidden,
       nextHiddenVirtual,
       nodePositionsRef.current,
-      newType
+      primaryKind,
+      newSecondaryData ?? undefined,
+      secondaryKind
     );
     const displayNodes = graph.nodes.map((node) => {
       const data = node.data as GraphNodeData;
-      if (data.kind !== newType) {
+      // Check for both kinds when in property mode
+      const isRelevantKind = newType === 'property'
+        ? (data.kind === 'property' || data.kind === 'directProperty')
+        : data.kind === newType;
+      if (!isRelevantKind) {
         return node;
       }
-      const detail = newData.byId[data.remId];
+      const relevantData = data.kind === 'directProperty' ? newSecondaryData : newPrimaryData;
+      const detail = relevantData?.byId[data.remId];
       if (!detail) {
         return node;
       }
@@ -3185,7 +3312,9 @@ function MindmapWidget() {
       return ids;
     };
 
-    const currentData = attributeType === 'property' ? propertyData : attributeType === 'interface' ? interfaceData : directPropertyData;
+    // When in property mode, consider both propertyData and directPropertyData for collapsing
+    const primaryData = attributeType === 'property' ? propertyData : interfaceData;
+    const secondaryData = attributeType === 'property' ? directPropertyData : undefined;
 
     if (collapsedNodes.size > 0) {
       // Expand all: clear collapsed nodes
@@ -3196,8 +3325,15 @@ function MindmapWidget() {
         ...collectIdsWithChildren(ancestorTrees),
         ...collectIdsWithChildren(descendantTrees),
       ]);
-      if (currentData) {
-        for (const detail of Object.values(currentData.byId)) {
+      if (primaryData) {
+        for (const detail of Object.values(primaryData.byId)) {
+          if (detail.hasChildren) {
+            allIds.add(detail.id);
+          }
+        }
+      }
+      if (secondaryData) {
+        for (const detail of Object.values(secondaryData.byId)) {
           if (detail.hasChildren) {
             allIds.add(detail.id);
           }
@@ -3703,13 +3839,22 @@ function MindmapWidget() {
   const treeToXml = useCallback((): string => {
     if (!loadedRemId || !loadedRemName) return '';
 
-    const currentAttrData = attributeType === 'property' ? propertyData : attributeType === 'interface' ? interfaceData : directPropertyData;
-    const attrNodeName = attributeType === 'directProperty' ? 'property' : attributeType;
+    // When in property mode, combine both propertyData and directPropertyData
+    const primaryAttrData = attributeType === 'property' ? propertyData : interfaceData;
+    const secondaryAttrData = attributeType === 'property' ? directPropertyData : undefined;
+    const attrNodeName = attributeType === 'property' ? 'property' : 'interface';
+    
+    // Helper to get combined attributes for a given owner ID
+    const getCombinedAttrs = (ownerId: string): AttributeNodeInfo[] => {
+      const primary = primaryAttrData?.byOwner[ownerId] || [];
+      const secondary = secondaryAttrData?.byOwner[ownerId] || [];
+      return [...primary, ...secondary];
+    };
 
     // Helper to convert HierarchyNode to XML
     const hierarchyNodeToXml = (node: HierarchyNode, indent: string): string => {
       const escapedName = escapeXml(node.name);
-      const attrs = currentAttrData?.byOwner[node.id] || [];
+      const attrs = getCombinedAttrs(node.id);
       const hasContent = node.children.length > 0 || attrs.length > 0;
 
       if (!hasContent) {
@@ -3776,7 +3921,7 @@ function MindmapWidget() {
     xml += '<mindmap>\n';
 
     // Add center node
-    const centerAttrs = currentAttrData?.byOwner[loadedRemId] || [];
+    const centerAttrs = getCombinedAttrs(loadedRemId);
     xml += `  <center id="${escapeXml(loadedRemId)}" name="${escapeXml(loadedRemName)}">\n`;
 
     if (centerAttrs.length > 0) {
@@ -3924,7 +4069,7 @@ function MindmapWidget() {
           onClick={handleToggleAttributes}
           disabled={!loadedRemId || (!propertyData && !interfaceData && !directPropertyData)}
         >
-          Toggle {attributeType === 'directProperty' ? 'Properties' : attributeType.charAt(0).toUpperCase() + attributeType.slice(1)}
+          Toggle {attributeType === 'property' ? 'Properties' : 'Interfaces'}
         </button>
         <select
           style={{
@@ -3937,11 +4082,10 @@ function MindmapWidget() {
             fontWeight: 600,
           }}
           value={attributeType}
-          onChange={(e) => handleSwitchAttributes(e.target.value as 'property' | 'interface' | 'directProperty')}
+          onChange={(e) => handleSwitchAttributes(e.target.value as 'property' | 'interface')}
           disabled={!loadedRemId || (!propertyData && !interfaceData && !directPropertyData)}
         >
-          <option value="property">Property Fields</option>
-          <option value="directProperty">Properties</option>
+          <option value="property">Properties</option>
           <option value="interface">Interfaces</option>
         </select>
         <button
