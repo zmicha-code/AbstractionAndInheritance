@@ -311,6 +311,19 @@ export async function isDescriptor(plugin: RNPlugin, rem: Rem): Promise<boolean>
     return type === RemType.DESCRIPTOR;
 }
 
+// Reserved descriptor keywords that should NOT be treated as property descriptors
+export const RESERVED_DESCRIPTOR_KEYWORDS = ["extends", "implements", "eigenschaften"];
+
+// Check if a Rem is a "property descriptor" - a descriptor that is NOT a reserved keyword
+// These behave like terminal property nodes (no children, shown as properties in the graph)
+export async function isPropertyDescriptor(plugin: RNPlugin, rem: Rem): Promise<boolean> {
+    const type = await rem.getType();
+    if (type !== RemType.DESCRIPTOR) return false;
+    const name = await getRemText(plugin, rem);
+    const normalized = (name ?? "").trim().toLowerCase();
+    return !RESERVED_DESCRIPTOR_KEYWORDS.includes(normalized);
+}
+
 export async function isConcept(plugin: RNPlugin, rem: Rem): Promise<boolean> {
     const type = await rem.getType();
     return type === RemType.CONCEPT;

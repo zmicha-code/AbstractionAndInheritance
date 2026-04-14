@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor } from "../utils/utils";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -432,12 +432,15 @@ async function getStructuralDescendantChildren(plugin: RNPlugin, rem: PluginRem)
   const meta = await Promise.all(
     children.map(async (child) => {
       const [isDoc, type] = await Promise.all([child.isDocument(), child.getType()]);
-      return { child, isDoc, type };
+      // Check if this is a property descriptor (descriptor that's not a reserved keyword)
+      const isPropDesc = type === RemType.DESCRIPTOR ? await isPropertyDescriptor(plugin, child) : false;
+      return { child, isDoc, type, isPropDesc };
     })
   );
   return meta
-    .filter(({ isDoc, type }) => !isDoc && type !== RemType.DESCRIPTOR)
-    .map(({ child } ) => child);
+    // Keep non-documents AND (non-descriptors OR property descriptors)
+    .filter(({ isDoc, type, isPropDesc }) => !isDoc && (type !== RemType.DESCRIPTOR || isPropDesc))
+    .map(({ child }) => child);
 }
 
 async function buildDescendantNodes(
@@ -462,9 +465,8 @@ async function buildDescendantNodes(
 
   const result: HierarchyNode[] = [];
   for (const child of childMap.values()) {
-    // Skip interfaces with "Property" tag - they should not appear in the graph
-    const propertyTag = await getTag(plugin, child, "Property");
-    if (propertyTag) continue;
+    // Skip property descriptors - they should not appear in the graph as structural children
+    if (await isPropertyDescriptor(plugin, child)) continue;
     
     visited.add(child._id);
     const [name, descendants] = await Promise.all([
@@ -1725,8 +1727,8 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         extendsIds = [...new Set(parentRems.map((p) => p._id))];
       } catch {}
       const isPrivate = await hasTag(plugin, attr, "Private");
-      const isInterfaceTagged = await hasTag(plugin, attr, "Property");
-      // Property-tagged interfaces should not have any children (they are terminal)
+      const isInterfaceTagged = await isPropertyDescriptor(plugin, attr);
+      // Property descriptors should not have any children (they are terminal)
       const subChildren = isInterfaceTagged ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
       attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren, isPrivate, isInterfaceTagged });
     }
