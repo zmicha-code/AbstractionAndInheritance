@@ -147,7 +147,7 @@ export function getNodeStyle(
   isCollapsed: boolean,
   isCenter: boolean = false,
   width?: number,
-  isInterfaceTagged?: boolean
+  isDescriptorProperty?: boolean
 ): React.CSSProperties {
   let style: React.CSSProperties;
   
@@ -167,7 +167,7 @@ export function getNodeStyle(
     style = isCollapsed ? VIRTUAL_DIRECT_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_DIRECT_PROPERTY_NODE_STYLE;
   } else if (kind === 'virtualProperty') {
     style = isCollapsed ? VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_PROPERTY_NODE_STYLE;
-  } else if (kind === 'virtualInterface' && isInterfaceTagged) {
+  } else if (kind === 'virtualInterface' && isDescriptorProperty) {
     style = isCollapsed ? VIRTUAL_INTERFACE_TAGGED_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_TAGGED_NODE_STYLE;
   } else {
     style = isCollapsed ? VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_NODE_STYLE;

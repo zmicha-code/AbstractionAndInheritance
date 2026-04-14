@@ -48,7 +48,7 @@ type GraphNodeData = {
   sourcePropertyId?: string;  // For virtual nodes: the ancestor property this inherits from
   ownerRemId?: string;        // For virtual nodes: the REM that should implement this
   sourceRemLabel?: string;    // For virtual nodes: the label of the ancestor REM that owns the source property (for hover display)
-  isInterfaceTagged?: boolean; // For virtual interfaces: whether the source has the "Interface" tag
+  isDescriptorProperty?: boolean; // For virtual interfaces: whether the source has the "Interface" tag
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
@@ -78,7 +78,7 @@ type AttributeNodeInfo = {
   extends: string[];
   children: AttributeNodeInfo[];
   isPrivate: boolean;
-  isInterfaceTagged: boolean;
+  isDescriptorProperty: boolean;
 };
 
 type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
@@ -101,7 +101,7 @@ type VirtualAttributeInfo = {
   sourceRemId: string;           // The ancestor REM that owns the source property
   sourceRemLabel: string;        // The label of the ancestor REM (for hover display)
   children: VirtualAttributeInfo[];  // Children from the source property (for expandable virtual interfaces)
-  isInterfaceTagged: boolean;    // Whether the source attribute has the "Interface" tag
+  isDescriptorProperty: boolean;    // Whether the source attribute has the "Interface" tag
 };
 
 type VirtualAttributeData = {
@@ -1735,14 +1735,14 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         extendsIds = [...new Set(parentRems.map((p) => p._id))];
       } catch {}
       const isPrivate = await hasTag(plugin, attr, "Private");
-      const isInterfaceTagged = await isPropertyDescriptor(plugin, attr);
+      const isDescriptorProperty = await isPropertyDescriptor(plugin, attr);
       // Property descriptors should not have any children (they are terminal)
-      const subChildren = isInterfaceTagged ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
-      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isInterfaceTagged });
+      const subChildren = isDescriptorProperty ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
+      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate, isInterfaceTagged: p.isInterfaceTagged };
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate, isDescriptorProperty: p.isDescriptorProperty };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1772,7 +1772,7 @@ function splitInterfaceData(interfaceData: AttributeData): { regularInterfaces: 
     forDirect: boolean
   ): AttributeNodeInfo[] => {
     return attrs
-      .filter(attr => forDirect ? attr.isInterfaceTagged : !attr.isInterfaceTagged)
+      .filter(attr => forDirect ? attr.isDescriptorProperty : !attr.isDescriptorProperty)
       .map(attr => ({
         ...attr,
         // For direct properties, children are already empty (set in collectAttributes)
@@ -1793,9 +1793,9 @@ function splitInterfaceData(interfaceData: AttributeData): { regularInterfaces: 
     }
   }
 
-  // Split byId based on isInterfaceTagged
+  // Split byId based on isDescriptorProperty
   for (const [id, detail] of Object.entries(interfaceData.byId)) {
-    if (detail.isInterfaceTagged) {
+    if (detail.isDescriptorProperty) {
       directById[id] = detail;
     } else {
       regularById[id] = detail;
@@ -1863,7 +1863,7 @@ function buildVirtualAttributeData(
       sourceRemId: sourceRemId,
       sourceRemLabel: sourceRemLabel,
       children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel),
-      isInterfaceTagged: child.isInterfaceTagged,
+      isDescriptorProperty: child.isDescriptorProperty,
     }));
   };
 
@@ -2026,7 +2026,7 @@ function buildVirtualAttributeData(
     // Skip generating virtual attributes if this REM itself has the Property tag
     // (Property-tagged interfaces are terminal and don't need to implement virtual interfaces)
     const remDetail = attributeData.byId[remId];
-    if (remDetail?.isInterfaceTagged) {
+    if (remDetail?.isDescriptorProperty) {
       continue;
     }
     
@@ -2103,8 +2103,8 @@ function buildVirtualAttributeData(
               sourceRemId: ancestorId,
               sourceRemLabel: sourceRemLabel,
               // Property-tagged interfaces should not have virtual children (they are "terminal")
-              children: prop.isInterfaceTagged ? [] : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel),
-              isInterfaceTagged: prop.isInterfaceTagged,
+              children: prop.isDescriptorProperty ? [] : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel),
+              isDescriptorProperty: prop.isDescriptorProperty,
             });
           }
         }
@@ -2173,7 +2173,7 @@ function layoutVirtualAttributeDescendants(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isInterfaceTagged);
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isDescriptorProperty);
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -2184,7 +2184,7 @@ function layoutVirtualAttributeDescendants(
       sourcePropertyId: info.sourcePropertyId,
       ownerRemId: info.ownerRemId,
       sourceRemLabel: info.sourceRemLabel,
-      isInterfaceTagged: info.isInterfaceTagged,
+      isDescriptorProperty: info.isDescriptorProperty,
     };
 
     if (!childNode) {
@@ -2307,7 +2307,7 @@ function layoutVirtualAttributes(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isInterfaceTagged);
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isDescriptorProperty);
 
     nodes.push({
       id: nodeId,
@@ -2320,7 +2320,7 @@ function layoutVirtualAttributes(
         sourcePropertyId: info.sourcePropertyId,
         ownerRemId: info.ownerRemId,
         sourceRemLabel: info.sourceRemLabel,
-        isInterfaceTagged: info.isInterfaceTagged,
+        isDescriptorProperty: info.isDescriptorProperty,
       },
       style: nodeStyle,
       draggable: true,
@@ -3617,12 +3617,9 @@ function MindmapWidget() {
         // Set parent to owner REM
         await newRem.setParent(ownerRem);
         
-        // If the source interface has the "Interface" tag, add it to the new rem
-        if (nodeData?.isInterfaceTagged) {
-          const interfaceTagRem = await getTag(plugin, sourceProperty, "Property");
-          if (interfaceTagRem) {
-            await newRem.addTag(interfaceTagRem);
-          }
+        // If this is a direct property (descriptor), set the new rem as a descriptor
+        if (nodeData?.isDescriptorProperty) {
+          await newRem.setType(SetRemType.DESCRIPTOR);
         }
         
         // Create extends relationship to source interface
