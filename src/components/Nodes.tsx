@@ -12,6 +12,7 @@ const MINDMAP_NODE_BASE: React.CSSProperties = {
   padding: "6px 10px",
   borderRadius: 6,
   textAlign: "center",
+  whiteSpace: "nowrap",
 };
 
 // REM Node Styles

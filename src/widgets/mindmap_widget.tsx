@@ -18,6 +18,8 @@ import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
 import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor } from "../utils/utils";
+import { RichTextLabel } from "../utils/richText";
+import { RichTextInterface } from "@remnote/plugin-sdk";
 import { EDGE_TYPES } from "../components/Edges";
 import {
   REM_NODE_STYLE,
@@ -33,12 +35,14 @@ import {
 type HierarchyNode = {
   id: string;
   name: string;
+  richText?: RichTextInterface;  // Rich text for formatted rendering
   remRef: PluginRem;
   children: HierarchyNode[];
 };
 
 type GraphNodeData = {
   label: string;
+  richText?: RichTextInterface;  // Rich text for formatted rendering (LaTeX, bold, etc.)
   remId: string;
   kind: "rem" | "property" | "interface" | "virtualProperty" | "virtualInterface" | "directProperty" | "virtualDirectProperty";
   sourcePropertyId?: string;  // For virtual nodes: the ancestor property this inherits from
@@ -70,6 +74,7 @@ const ATTRIBUTE_HEIGHT_SPACING_OFFSET = -1;
 type AttributeNodeInfo = {
   id: string;
   label: string;
+  richText?: RichTextInterface;  // Rich text for formatted rendering
   extends: string[];
   children: AttributeNodeInfo[];
   isPrivate: boolean;
@@ -90,6 +95,7 @@ type AttributeData = {
 type VirtualAttributeInfo = {
   id: string;                    // Unique virtual ID (e.g., "virtual:ownerRemId:sourcePropertyId")
   label: string;                 // Same label as source property
+  richText?: RichTextInterface;  // Rich text for formatted rendering
   sourcePropertyId: string;      // The ancestor property this inherits from
   ownerRemId: string;            // The REM that should implement this
   sourceRemId: string;           // The ancestor REM that owns the source property
@@ -273,7 +279,7 @@ function RemFlowNode({ data }: NodeProps<GraphNodeData>) {
         id={REM_TARGET_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_TARGET_HANDLE_STYLE }}
       />
-      <span>{data.label}</span>
+      <RichTextLabel richText={data.richText} fallback={data.label} />
     </div>
   );
 }
@@ -311,7 +317,7 @@ function PropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
         id={ATTRIBUTE_TARGET_TOP_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...TOP_HANDLE_STYLE }}
       />
-      <span style={{ width: '100%' }}>{data.label}</span>
+      <RichTextLabel richText={data.richText} fallback={data.label} style={{ width: '100%' }} />
     </div>
   );
 }
@@ -349,7 +355,7 @@ function InterfaceFlowNode({ data }: NodeProps<GraphNodeData>) {
         id={ATTRIBUTE_TARGET_TOP_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...TOP_HANDLE_STYLE }}
       />
-      <span style={{ width: '100%' }}>{data.label}</span>
+      <RichTextLabel richText={data.richText} fallback={data.label} style={{ width: '100%' }} />
     </div>
   );
 }
@@ -376,7 +382,7 @@ function VirtualPropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
         id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
       />
-      <span style={{ width: '100%', fontStyle: 'italic' }}>⊕ {data.label}</span>
+      <RichTextLabel richText={data.richText} fallback={data.label} style={{ width: '100%', fontStyle: 'italic' }} prefix="⊕ " />
     </div>
   );
 }
@@ -419,6 +425,7 @@ async function buildAncestorNodes(
     result.push({
       id: parent._id,
       name: name || "(Untitled Rem)",
+      richText: parent.text,
       remRef: parent,
       children: ancestors,
     });
@@ -476,6 +483,7 @@ async function buildDescendantNodes(
     result.push({
       id: child._id,
       name: name || "(Untitled Rem)",
+      richText: child.text,
       remRef: child,
       children: descendants,
     });
@@ -580,12 +588,12 @@ function layoutSubtreeHorizontal(
     y = stored.y;
   }
 
-  const style = getNodeStyle('rem', collapsed.has(node.id), false, estWidth);
+  const style = getNodeStyle('rem', collapsed.has(node.id), false);
 
   const graphNode: GraphNode = {
     id: node.id,
     position: { x, y },
-    data: { label: node.name, remId: node.id, kind: "rem" },
+    data: { label: node.name, richText: node.richText, remId: node.id, kind: "rem" },
     style,
     draggable: true,
     selectable: true,
@@ -769,6 +777,7 @@ async function createGraphData(
   plugin: RNPlugin,
   centerId: string,
   centerLabel: string,
+  centerRichText: RichTextInterface | undefined,
   ancestors: HierarchyNode[],
   descendants: HierarchyNode[],
   collapsed: Set<string>,
@@ -780,13 +789,12 @@ async function createGraphData(
   secondaryAttributeData?: AttributeData,
   secondaryKind?: 'property' | 'interface' | 'directProperty'
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-  const centerWidth = estimateNodeWidth(centerLabel, 'rem');
   const centerStored = nodePositions?.get(centerId);
   const centerGraphNode: GraphNode = {
     id: centerId,
-    position: centerStored ? { ...centerStored } : { x: -centerWidth / 2, y: 0 },
-    data: { label: centerLabel, remId: centerId, kind: "rem" },
-    style: getNodeStyle('rem', false, true, centerWidth),
+    position: centerStored ? { ...centerStored } : { x: 0, y: 0 },
+    data: { label: centerLabel, richText: centerRichText, remId: centerId, kind: "rem" },
+    style: getNodeStyle('rem', false, true),
     draggable: true,
     selectable: true,
     type: "remNode",
@@ -989,19 +997,19 @@ function layoutAttributeTree(
   sorted.forEach((info, index) => {
     const nodeId = attributeNodeId(kind, info.id);
     if (existingNodeIds.has(nodeId)) return;
-    const attrWidth = estimateNodeWidth(info.label, kind);
-    let posX = ownerNode.position.x + ownerWidth / 2 - attrWidth / 2;
+    const propertyWidth = estimateNodeWidth(info.label, kind);
+    let posX = ownerNode.position.x + 100;
     let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
     const storedPos = nodePositions?.get(nodeId);
     if (storedPos) {
       posX = storedPos.x;
       posY = storedPos.y;
     }
-    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false, attrWidth);
+    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false);
     nodes.push({
       id: nodeId,
       position: { x: posX, y: posY },
-      data: { label: info.label, remId: info.id, kind },
+      data: { label: info.label, richText: info.richText, remId: info.id, kind },
       style: nodeStyle,
       draggable: true,
       selectable: true,
@@ -1017,7 +1025,7 @@ function layoutAttributeTree(
         source: ownerNode.id,
         target: nodeId,
         sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
-        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
       });
@@ -1081,7 +1089,7 @@ function layoutAttributeDescendants(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false, attrWidth);
+    const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false);
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -1730,7 +1738,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       const isInterfaceTagged = await isPropertyDescriptor(plugin, attr);
       // Property descriptors should not have any children (they are terminal)
       const subChildren = isInterfaceTagged ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
-      attrs.push({ id: attr._id, label, extends: extendsIds, children: subChildren, isPrivate, isInterfaceTagged });
+      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isInterfaceTagged });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
@@ -1849,6 +1857,7 @@ function buildVirtualAttributeData(
     return children.map(child => ({
       id: `virtual:${ownerRemId}:${child.id}`,
       label: child.label,
+      richText: child.richText,
       sourcePropertyId: child.id,
       ownerRemId: ownerRemId,
       sourceRemId: sourceRemId,
@@ -2088,6 +2097,7 @@ function buildVirtualAttributeData(
             candidateVirtualAttrs.push({
               id: `virtual:${remId}:${prop.id}`,
               label: prop.label,
+              richText: prop.richText,
               sourcePropertyId: prop.id,
               ownerRemId: remId,
               sourceRemId: ancestorId,
@@ -2163,7 +2173,7 @@ function layoutVirtualAttributeDescendants(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, attrWidth, info.isInterfaceTagged);
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isInterfaceTagged);
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -2287,8 +2297,8 @@ function layoutVirtualAttributes(
     const virtualKind = kind === 'property' ? 'virtualProperty' : kind === 'interface' ? 'virtualInterface' : 'virtualDirectProperty';
     const hasChildren = info.children && info.children.length > 0;
     const isCollapsed = collapsed.has(info.id);
-    const attrWidth = estimateNodeWidth(info.label, virtualKind);
-    let posX = ownerNode.position.x + ownerWidth / 2 - attrWidth / 2;
+    const propertyWidth = estimateNodeWidth(info.label, virtualKind);
+    let posX = ownerNode.position.x + 100;
     let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
 
     const storedPos = nodePositions?.get(nodeId);
@@ -2297,13 +2307,14 @@ function layoutVirtualAttributes(
       posY = storedPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, attrWidth, info.isInterfaceTagged);
+    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isInterfaceTagged);
 
     nodes.push({
       id: nodeId,
       position: { x: posX, y: posY },
       data: {
         label: info.label,
+        richText: info.richText,
         remId: info.id,
         kind: virtualKind,
         sourcePropertyId: info.sourcePropertyId,
@@ -2328,7 +2339,7 @@ function layoutVirtualAttributes(
         source: ownerNode.id,
         target: nodeId,
         sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
-        targetHandle: ATTRIBUTE_TARGET_TOP_HANDLE,
+        targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
         style: { stroke: "#9ca3af" }, // Grey line (no dash for owner connection)
@@ -2407,6 +2418,7 @@ function MindmapWidget() {
 
   const [focusedRemName, setFocusedRemName] = useState<string>("");
   const [loadedRemName, setLoadedRemName] = useState<string>("");
+  const [loadedRemRichText, setLoadedRemRichText] = useState<RichTextInterface | undefined>(undefined);
   const [loadedRemId, setLoadedRemId] = useState<string>("");
   const [ancestorTrees, setAncestorTrees] = useState<HierarchyNode[]>([]);
   const [descendantTrees, setDescendantTrees] = useState<HierarchyNode[]>([]);
@@ -2544,6 +2556,7 @@ function MindmapWidget() {
             setDirectPropertyData(directProperties);
             setLoadedRemId(rem._id);
             setLoadedRemName(centerLabel);
+            setLoadedRemRichText(rem.text);
 
             // Restore collapsed and hidden from saved state
             setCollapsedNodes(new Set(savedState.collapsedNodes || []));
@@ -2635,6 +2648,7 @@ function MindmapWidget() {
       plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
+      loadedRemRichText,
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
@@ -2666,7 +2680,7 @@ function MindmapWidget() {
     setNodes(graph.nodes);
     storePositions(graph.nodes);
     setEdges(updatedEdges);
-  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, directPropertyData, hiddenAttributes, hiddenVirtualAttributes, plugin, storePositions, attributeType]);
+  }, [loadedRemId, loadedRemName, loadedRemRichText, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, directPropertyData, hiddenAttributes, hiddenVirtualAttributes, plugin, storePositions, attributeType]);
 
   const loadHierarchy = useCallback(
     async (remId: string, ancestorsOnly?: boolean) => {
@@ -2677,6 +2691,7 @@ function MindmapWidget() {
       setDirectPropertyData(null);
       setHiddenAttributes(new Set<string>());
       setHiddenVirtualAttributes(new Set<string>());
+      setNodes([]);
       setEdges([]);
       try {
         const rem = await plugin.rem.findOne(remId);
@@ -2860,6 +2875,7 @@ function MindmapWidget() {
         setHiddenAttributes(hidden);
         setLoadedRemId(rem._id);
         setLoadedRemName(centerLabel);
+        setLoadedRemRichText(rem.text);
 
         const newParentMap = new Map<string, string>();
         const buildRemParentMap = (forest: HierarchyNode[]) => {
@@ -2890,6 +2906,33 @@ function MindmapWidget() {
           buildAttrParentMap(attrs, ownerId, 'directProperty');
         });
         setParentMap(newParentMap);
+
+        // Build graph immediately with local values to avoid stale closure issue
+        const primaryData = attributeType === 'property' ? properties : interfaces;
+        const secondaryData = attributeType === 'property' ? directProperties : undefined;
+        const primaryKind: 'property' | 'interface' | 'directProperty' = attributeType === 'property' ? 'property' : 'interface';
+        const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = attributeType === 'property' ? 'directProperty' : undefined;
+        
+        const graph = await createGraphData(
+          plugin,
+          rem._id,
+          centerLabel,
+          rem.text,
+          ancestorTreesResult,
+          descendantTreesResult,
+          collapsed,
+          primaryData ?? undefined,
+          hidden,
+          new Set<string>(),
+          nodePositionsRef.current,
+          primaryKind,
+          secondaryData ?? undefined,
+          secondaryKind
+        );
+        const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+        setNodes(graph.nodes);
+        storePositions(graph.nodes);
+        setEdges(updatedEdges);
       } catch (err) {
         console.error(err);
         setError("Failed to build inheritance hierarchy.");
@@ -2897,7 +2940,7 @@ function MindmapWidget() {
         setLoading(false);
       }
     },
-    [plugin, storePositions, updateGraph]
+    [plugin, storePositions, attributeType]
   );
 
   useEffect(() => {
@@ -3032,19 +3075,23 @@ function MindmapWidget() {
   }, [parentMap, propertyData, interfaceData, storePositions]);
 
 
-  const handleLoad = useCallback(() => {
-    if (!focusedRemId) {
+  const handleLoad = useCallback(async () => {
+    // Fetch fresh focused rem to avoid stale closure issues
+    const currentFocusedRem = await plugin.focus.getFocusedRem();
+    const currentRemId = currentFocusedRem?._id;
+
+    if (!currentRemId) {
       setError("Focus a rem before refreshing.");
       return;
     }
 
-    if (loadedRemId && loadedRemId !== focusedRemId) {
+    if (loadedRemId && loadedRemId !== currentRemId) {
       setHistoryStack((prev) => [...prev, loadedRemId]);
     }
 
     nodePositionsRef.current = new Map();
-    loadHierarchy(focusedRemId);
-  }, [focusedRemId, loadHierarchy]);
+    loadHierarchy(currentRemId);
+  }, [plugin, loadedRemId, loadHierarchy]);
 
 
 
@@ -3117,6 +3164,7 @@ function MindmapWidget() {
       plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
+      loadedRemRichText,
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
@@ -3235,6 +3283,7 @@ function MindmapWidget() {
       plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
+      loadedRemRichText,
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
@@ -3671,6 +3720,7 @@ function MindmapWidget() {
       plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
+      loadedRemRichText,
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
@@ -3732,6 +3782,7 @@ function MindmapWidget() {
       plugin,
       loadedRemId,
       loadedRemName || "(Untitled Rem)",
+      loadedRemRichText,
       ancestorTrees,
       descendantTrees,
       collapsedNodes,
