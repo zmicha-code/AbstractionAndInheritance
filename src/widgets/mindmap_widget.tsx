@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor, getClassProperties, getClassDescriptors, getAncestorLineageStrings } from "../utils/utils";
 import { RichTextLabel } from "../utils/richText";
 import { RichTextInterface } from "@remnote/plugin-sdk";
 import { EDGE_TYPES } from "../components/Edges";
@@ -3578,6 +3578,108 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [contextMenu, plugin, handleContextMenuClose]);
 
+  const handleCopyDebugInfo = useCallback(async () => {
+    if (!contextMenu?.remId) return;
+    const rem = (await plugin.rem.findOne(contextMenu.remId)) as PluginRem | null;
+    if (!rem) {
+      handleContextMenuClose();
+      return;
+    }
+    
+    try {
+      // Gather all Rem information (similar to remInfo_widget)
+      const remName = await getRemText(plugin, rem);
+      const remType = await rem.getType();
+      
+      // Fetch data with individual error handling
+      let parentClass: PluginRem[] = [];
+      let lineage: string[] = [];
+      let properties: PluginRem[] = [];
+      let descriptors: PluginRem[] = [];
+      let tags: PluginRem[] = [];
+      let taggedRems: PluginRem[] = [];
+      let ancestorTags: PluginRem[] = [];
+      let descendantTags: PluginRem[] = [];
+      let referencingRems: PluginRem[] = [];
+      let referencedRems: PluginRem[] = [];
+      let deepReferencedRems: PluginRem[] = [];
+
+      try { parentClass = await getParentClass(plugin, rem) || []; } catch {}
+      try { lineage = await getAncestorLineageStrings(plugin, rem) || []; } catch {}
+      try { properties = await getClassProperties(plugin, rem) || []; } catch {}
+      try { descriptors = await getClassDescriptors(plugin, rem) || []; } catch {}
+      try { tags = await rem.getTagRems() || []; } catch {}
+      try { taggedRems = await rem.taggedRem() || []; } catch {}
+      try { ancestorTags = await rem.ancestorTagRem() || []; } catch {}
+      try { descendantTags = await rem.descendantTagRem() || []; } catch {}
+      try { referencingRems = await rem.remsReferencingThis() || []; } catch {}
+      try { referencedRems = await rem.remsBeingReferenced() || []; } catch {}
+      try { deepReferencedRems = await rem.deepRemsBeingReferenced() || []; } catch {}
+
+      // Helper to format Rem array as text list
+      const formatRemList = async (rems: PluginRem[] | null): Promise<string> => {
+        if (!rems || rems.length === 0) return "(none)";
+        const names = await Promise.all(rems.map(async r => {
+          try { return await getRemText(plugin, r); } catch { return r._id; }
+        }));
+        return names.join(", ");
+      };
+
+      // Build debug text
+      const debugLines: string[] = [
+        "=== Rem Debug Info ===",
+        `ID: ${rem._id}`,
+        `Name: ${remName}`,
+        `Type: ${remType}`,
+        "",
+        `Parent Types: ${await formatRemList(parentClass)}`,
+        `Ancestor Lineage: ${lineage.length > 0 ? lineage.join(" | ") : "(none)"}`,
+        `Properties: ${await formatRemList(properties)}`,
+        `Descriptors: ${await formatRemList(descriptors)}`,
+        `Tags: ${await formatRemList(tags)}`,
+        `Tagged Rems: ${await formatRemList(taggedRems)}`,
+        `Ancestor Tags: ${await formatRemList(ancestorTags)}`,
+        `Descendant Tags: ${await formatRemList(descendantTags)}`,
+        `Rems Referencing This: ${await formatRemList(referencingRems)}`,
+        `Rems Being Referenced: ${await formatRemList(referencedRems)}`,
+        `Deep Rems Being Referenced: ${await formatRemList(deepReferencedRems)}`
+      ];
+
+      const debugText = debugLines.join("\n");
+
+      // Copy to clipboard using fallback method (more reliable in iframe contexts)
+      const textArea = document.createElement('textarea');
+      textArea.value = debugText;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-9999px';
+      textArea.style.top = '0';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      const success = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      
+      if (success) {
+        await plugin.app.toast("Debug info copied to clipboard!");
+      } else {
+        // Try navigator.clipboard as fallback
+        try {
+          await navigator.clipboard.writeText(debugText);
+          await plugin.app.toast("Debug info copied to clipboard!");
+        } catch {
+          console.log("Debug info (copy failed):", debugText);
+          await plugin.app.toast("Copy failed - check console for debug info");
+        }
+      }
+    } catch (error) {
+      console.error("Error copying debug info:", error);
+      await plugin.app.toast("Failed to copy debug info: " + String(error));
+    }
+    
+    handleContextMenuClose();
+  }, [contextMenu, plugin, handleContextMenuClose]);
+
   const handleImplementVirtualProperty = useCallback(async () => {
     if (!virtualContextMenu) return;
     
@@ -4366,6 +4468,22 @@ function MindmapWidget() {
               onClick={handleCopyContextRem}
             >
               Copy Rem
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#6b7280',
+                borderTop: '1px solid #e2e8f0',
+              }}
+              onClick={handleCopyDebugInfo}
+            >
+              Copy Debug Info
             </button>
           </div>
         )}
