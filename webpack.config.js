@@ -122,15 +122,7 @@ if (isProd) {
       "Access-Control-Allow-Headers": "baggage, sentry-trace"
     },
     client: {
-      overlay: {
-        runtimeErrors: (error) => {
-          // Suppress benign ResizeObserver error
-          if (error.message === 'ResizeObserver loop completed with undelivered notifications.') {
-            return false;
-          }
-          return true;
-        },
-      },
+      overlay: true,
     },
   };
 }

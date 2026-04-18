@@ -92,7 +92,7 @@ export const VIRTUAL_INTERFACE_NODE_STYLE: React.CSSProperties = {
 
 export const VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED: React.CSSProperties = {
   ...VIRTUAL_INTERFACE_NODE_STYLE,
-  background: "#c9c9c9",
+  background: "#8d8d8d",
 };
 
 // Virtual Interface with "Interface" tag - greenish to indicate it's a true interface

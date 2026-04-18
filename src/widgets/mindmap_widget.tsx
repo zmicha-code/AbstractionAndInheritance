@@ -79,6 +79,7 @@ type AttributeNodeInfo = {
   children: AttributeNodeInfo[];
   isPrivate: boolean;
   isDescriptorProperty: boolean;
+  isExported: boolean;  // Whether this interface has the "Export" tag (for interface filtering)
 };
 
 type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
@@ -122,6 +123,13 @@ type MindMapState = {
   hiddenVirtualAttributes: string[];
   nodePositions: Record<string, { x: number; y: number }>;
   historyStack: string[];
+};
+
+// Export metadata for each rem (pre-fetched for XML export)
+type ExportMetadata = {
+  isProperty: boolean;     // true if descriptor or document type
+  isExported: boolean;     // true if should be exported (document, descriptor, or has Export tag)
+  extendsNames: string[];  // names of parent rems (via extends descriptor)
 };
 
 // Property and Interface node styles are now imported from ../components/Nodes
@@ -1441,7 +1449,7 @@ async function integrateAttributeGraph(
       
       // Count ALL existing attribute nodes for this owner (across all kinds)
       // This ensures virtual properties appear below direct properties + virtual direct properties
-      const visibleExistingCount = countAttributeNodesForOwner(ownerId, nodes);
+      const visibleExistingCount = countAttributeNodesForOwner(ownerId);
       
       layoutVirtualAttributes(
         ownerNode,
@@ -1736,13 +1744,20 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       } catch {}
       const isPrivate = await hasTag(plugin, attr, "Private");
       const isDescriptorProperty = await isPropertyDescriptor(plugin, attr);
+      // Properties (documents) and direct properties (descriptors) are always exported
+      // Regular interfaces require the Export tag
+      const isExported = topLevelIsDocument || isDescriptorProperty || await hasTag(plugin, attr, "Export");
+      // Skip non-exported sub-attributes entirely (children of interfaces)
+      // Top-level interfaces are kept for byId tracking, but their non-exported children are not collected
+      if (isSubAttribute && !topLevelIsDocument && !isExported) continue;
       // Property descriptors should not have any children (they are terminal)
-      const subChildren = isDescriptorProperty ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
-      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty });
+      const skipChildren = isDescriptorProperty;
+      const subChildren = skipChildren ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
+      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty, isExported });
     }
     attrs.sort((a, b) => a.label.localeCompare(b.label));
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate, isDescriptorProperty: p.isDescriptorProperty };
+      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate, isDescriptorProperty: p.isDescriptorProperty, isExported: p.isExported };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1806,6 +1821,30 @@ function splitInterfaceData(interfaceData: AttributeData): { regularInterfaces: 
     regularInterfaces: { byOwner: regularByOwner, byId: regularById },
     directProperties: { byOwner: directByOwner, byId: directById }
   };
+}
+
+/**
+ * Filters interface data to only include interfaces that have the Export tag.
+ * Non-exported interfaces are kept in byId (for extends tracking) but removed from byOwner (for display).
+ */
+function filterExportedInterfaces(interfaceData: AttributeData): AttributeData {
+  const filteredByOwner: Record<string, AttributeNodeInfo[]> = {};
+  const filteredById: Record<string, AttributeDetail> = {};
+
+  // Only keep exported interfaces for display
+  for (const [ownerId, attrs] of Object.entries(interfaceData.byOwner)) {
+    const filtered = attrs.filter(attr => attr.isExported);
+    if (filtered.length > 0) {
+      filteredByOwner[ownerId] = filtered;
+    }
+  }
+
+  // Keep all interfaces in byId (needed for extends relationship tracking)
+  for (const [id, detail] of Object.entries(interfaceData.byId)) {
+    filteredById[id] = detail;
+  }
+
+  return { byOwner: filteredByOwner, byId: filteredById };
 }
 
 function buildVirtualAttributeData(
@@ -2072,6 +2111,9 @@ function buildVirtualAttributeData(
       for (const prop of ancestorProps) {
         // Skip the rem itself
         if (prop.id === remId) continue;
+        
+        // Skip non-exported interfaces - only exported ones create implementation requirements
+        if (!prop.isExported) continue;
         
         // Skip if this property has the "Private" tag
         if (prop.isPrivate) continue;
@@ -2544,7 +2586,9 @@ function MindmapWidget() {
             ]);
 
             // Split interfaces into regular interfaces and direct properties (Property-tagged)
-            const { regularInterfaces: interfaces, directProperties } = splitInterfaceData(interfacesRaw);
+            const { regularInterfaces: interfacesUnfiltered, directProperties } = splitInterfaceData(interfacesRaw);
+            // Filter interfaces to only show those with Export tag (or with exported descendants)
+            const interfaces = filterExportedInterfaces(interfacesUnfiltered);
 
             if (cancelled) return;
 
@@ -2722,7 +2766,9 @@ function MindmapWidget() {
         ]);
 
         // Split interfaces into regular interfaces and direct properties (Property-tagged)
-        const { regularInterfaces: interfaces, directProperties } = splitInterfaceData(interfacesRaw);
+        const { regularInterfaces: interfacesUnfiltered, directProperties } = splitInterfaceData(interfacesRaw);
+        // Filter interfaces to only show those with Export tag (or with exported descendants)
+        const interfaces = filterExportedInterfaces(interfacesUnfiltered);
 
         // 1.3
         const collapsed = new Set<string>();
@@ -3638,6 +3684,16 @@ function MindmapWidget() {
           }
         }
         
+        // If source interface is exported, also export the new implementation
+        // This ensures the inheritance chain properly propagates export requirements
+        const sourceIsExported = await hasTag(plugin, sourceProperty, "Export");
+        if (sourceIsExported) {
+          const exportTag = await getTag(plugin, sourceProperty, "Export");
+          if (exportTag) {
+            await newRem.addTag(exportTag);
+          }
+        }
+        
         // Update descendant interfaces that extend the same source interface
         // to now extend this newly created interface instead.
         const updatedCount = await updateDescendantInterfaceReferences(plugin, newRem, ownerRem, sourceProperty);
@@ -3885,130 +3941,132 @@ function MindmapWidget() {
       .replace(/'/g, '&apos;');
   }, []);
 
-  // Convert the tree structure to XML format
-  const treeToXml = useCallback((): string => {
-    if (!loadedRemId || !loadedRemName) return '';
+  // Helper to sanitize a string into a valid XML tag name
+  // Rules: must start with letter or underscore, can contain letters, digits, hyphens, underscores, periods
+  const sanitizeXmlTagName = useCallback((str: string): string => {
+    if (!str || str.trim().length === 0) return '_unnamed';
+    // Replace invalid characters with underscores
+    let sanitized = str
+      .replace(/[^a-zA-Z0-9_\-\.]/g, '_')  // Replace invalid chars with underscore
+      .replace(/^[^a-zA-Z_]/, '_');         // Ensure starts with letter or underscore
+    // Remove consecutive underscores
+    sanitized = sanitized.replace(/_+/g, '_');
+    // Remove trailing underscores
+    sanitized = sanitized.replace(/_+$/, '');
+    return sanitized || '_unnamed';
+  }, []);
 
-    // When in property mode, combine both propertyData and directPropertyData
-    const primaryAttrData = attributeType === 'property' ? propertyData : interfaceData;
-    const secondaryAttrData = attributeType === 'property' ? directPropertyData : undefined;
-    const attrNodeName = attributeType === 'property' ? 'property' : 'interface';
+  // Build export metadata for all descendants (async pre-fetch)
+  const buildExportMetadata = useCallback(async (
+    descendants: HierarchyNode[]
+  ): Promise<Map<string, ExportMetadata>> => {
+    const metadata = new Map<string, ExportMetadata>();
     
-    // Helper to get combined attributes for a given owner ID
-    const getCombinedAttrs = (ownerId: string): AttributeNodeInfo[] => {
-      const primary = primaryAttrData?.byOwner[ownerId] || [];
-      const secondary = secondaryAttrData?.byOwner[ownerId] || [];
-      return [...primary, ...secondary];
-    };
+    // Collect all nodes from descendants tree
+    const allNodes: HierarchyNode[] = [];
+    const stack = [...descendants];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      allNodes.push(node);
+      if (node.children?.length) {
+        stack.push(...node.children);
+      }
+    }
+    
+    // Fetch metadata for each node in parallel
+    await Promise.all(allNodes.map(async (node) => {
+      const rem = node.remRef;
+      if (!rem) return;
+      
+      const [remType, isDocument] = await Promise.all([
+        rem.getType(),
+        rem.isDocument()
+      ]);
+      
+      // isProperty: true if descriptor or document
+      const isProperty = remType === RemType.DESCRIPTOR || isDocument;
+      
+      // isExported: documents and descriptors are always exported; others need Export tag
+      const isDescriptorProperty = remType === RemType.DESCRIPTOR ? await isPropertyDescriptor(plugin, rem) : false;
+      const isExported = isDocument || isDescriptorProperty || await hasTag(plugin, rem, "Export");
+      
+      // Get extends parents and resolve their names
+      const extendsParents = await getExtendsParents(plugin, rem);
+      const extendsNames: string[] = [];
+      for (const parent of extendsParents) {
+        const parentName = await getRemText(plugin, parent);
+        if (parentName) {
+          extendsNames.push(parentName);
+        }
+      }
+      
+      metadata.set(node.id, {
+        isProperty,
+        isExported,
+        extendsNames
+      });
+    }));
+    
+    return metadata;
+  }, [plugin]);
 
-    // Helper to convert HierarchyNode to XML
+  // Convert the tree structure to XML format (descendants only, with new schema)
+  const treeToXml = useCallback((exportMetadata: Map<string, ExportMetadata>): string => {
+    if (!loadedRemId || !loadedRemName) return '';
+    if (descendantTrees.length === 0) return '';
+
+    // Helper to convert HierarchyNode to XML with new schema
+    // Uses rem name as XML tag, adds extends/export/property attributes
     const hierarchyNodeToXml = (node: HierarchyNode, indent: string): string => {
-      const escapedName = escapeXml(node.name);
-      const attrs = getCombinedAttrs(node.id);
-      const hasContent = node.children.length > 0 || attrs.length > 0;
-
-      if (!hasContent) {
-        return `${indent}<rem id="${escapeXml(node.id)}" name="${escapedName}" />\n`;
+      const tagName = sanitizeXmlTagName(node.name);
+      const meta = exportMetadata.get(node.id);
+      
+      // Build attributes
+      const extendsAttr = meta?.extendsNames.join(',') || '';
+      const exportAttr = meta?.isExported ? 'true' : 'false';
+      const propertyAttr = meta?.isProperty ? 'true' : 'false';
+      
+      const hasChildren = node.children.length > 0;
+      
+      if (!hasChildren) {
+        return `${indent}<${tagName} extends="${escapeXml(extendsAttr)}" export="${exportAttr}" property="${propertyAttr}" />\n`;
       }
 
-      let xml = `${indent}<rem id="${escapeXml(node.id)}" name="${escapedName}">\n`;
+      let xml = `${indent}<${tagName} extends="${escapeXml(extendsAttr)}" export="${exportAttr}" property="${propertyAttr}">\n`;
 
-      // Add attributes/properties
-      if (attrs.length > 0) {
-        xml += `${indent}  <${attrNodeName}s>\n`;
-        for (const attr of attrs) {
-          xml += attributeNodeToXml(attr, indent + '    ');
-        }
-        xml += `${indent}  </${attrNodeName}s>\n`;
+      // Add children recursively
+      for (const child of node.children) {
+        xml += hierarchyNodeToXml(child, indent + '  ');
       }
 
-      // Add children
-      if (node.children.length > 0) {
-        xml += `${indent}  <children>\n`;
-        for (const child of node.children) {
-          xml += hierarchyNodeToXml(child, indent + '    ');
-        }
-        xml += `${indent}  </children>\n`;
-      }
-
-      xml += `${indent}</rem>\n`;
+      xml += `${indent}</${tagName}>\n`;
       return xml;
     };
 
-    // Helper to convert AttributeNodeInfo to XML
-    const attributeNodeToXml = (attr: AttributeNodeInfo, indent: string): string => {
-      const escapedLabel = escapeXml(attr.label);
-      const hasContent = attr.children.length > 0 || attr.extends.length > 0;
-
-      if (!hasContent) {
-        return `${indent}<${attrNodeName} id="${escapeXml(attr.id)}" name="${escapedLabel}" />\n`;
-      }
-
-      let xml = `${indent}<${attrNodeName} id="${escapeXml(attr.id)}" name="${escapedLabel}">\n`;
-
-      if (attr.extends.length > 0) {
-        xml += `${indent}  <extends>\n`;
-        for (const extId of attr.extends) {
-          xml += `${indent}    <ref id="${escapeXml(extId)}" />\n`;
-        }
-        xml += `${indent}  </extends>\n`;
-      }
-
-      if (attr.children.length > 0) {
-        xml += `${indent}  <children>\n`;
-        for (const child of attr.children) {
-          xml += attributeNodeToXml(child, indent + '    ');
-        }
-        xml += `${indent}  </children>\n`;
-      }
-
-      xml += `${indent}</${attrNodeName}>\n`;
-      return xml;
-    };
-
-    // Build the XML structure
+    // Build the XML structure - descendants only
     let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    xml += '<mindmap>\n';
+    xml += '<descendants>\n';
 
-    // Add center node
-    const centerAttrs = getCombinedAttrs(loadedRemId);
-    xml += `  <center id="${escapeXml(loadedRemId)}" name="${escapeXml(loadedRemName)}">\n`;
-
-    if (centerAttrs.length > 0) {
-      xml += `    <${attrNodeName}s>\n`;
-      for (const attr of centerAttrs) {
-        xml += attributeNodeToXml(attr, '      ');
-      }
-      xml += `    </${attrNodeName}s>\n`;
+    for (const descendant of descendantTrees) {
+      xml += hierarchyNodeToXml(descendant, '  ');
     }
 
-    xml += '  </center>\n';
-
-    // Add ancestors
-    if (ancestorTrees.length > 0) {
-      xml += '  <ancestors>\n';
-      for (const ancestor of ancestorTrees) {
-        xml += hierarchyNodeToXml(ancestor, '    ');
-      }
-      xml += '  </ancestors>\n';
-    }
-
-    // Add descendants
-    if (descendantTrees.length > 0) {
-      xml += '  <descendants>\n';
-      for (const descendant of descendantTrees) {
-        xml += hierarchyNodeToXml(descendant, '    ');
-      }
-      xml += '  </descendants>\n';
-    }
-
-    xml += '</mindmap>';
+    xml += '</descendants>';
     return xml;
-  }, [loadedRemId, loadedRemName, ancestorTrees, descendantTrees, propertyData, interfaceData, directPropertyData, attributeType, escapeXml]);
+  }, [loadedRemId, loadedRemName, descendantTrees, escapeXml, sanitizeXmlTagName]);
 
   // Handle export to XML
   const handleExportToXml = useCallback(async () => {
-    const xml = treeToXml();
+    if (descendantTrees.length === 0) {
+      setError("No descendants to export");
+      setPaneContextMenu(null);
+      return;
+    }
+
+    // Pre-fetch export metadata for all descendants
+    const exportMetadata = await buildExportMetadata(descendantTrees);
+    
+    const xml = treeToXml(exportMetadata);
     if (!xml) {
       setError("No data to export");
       setPaneContextMenu(null);
@@ -4059,7 +4117,7 @@ function MindmapWidget() {
     }
 
     setPaneContextMenu(null);
-  }, [treeToXml, plugin]);
+  }, [descendantTrees, buildExportMetadata, treeToXml, plugin]);
 
   // Handle pane (empty space) right-click
   const handlePaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
