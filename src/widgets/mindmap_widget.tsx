@@ -38,6 +38,7 @@ type HierarchyNode = {
   richText?: RichTextInterface;  // Rich text for formatted rendering
   remRef: PluginRem;
   children: HierarchyNode[];
+  isExported?: boolean;  // Whether this rem has the "Export" tag
 };
 
 type GraphNodeData = {
@@ -49,6 +50,7 @@ type GraphNodeData = {
   ownerRemId?: string;        // For virtual nodes: the REM that should implement this
   sourceRemLabel?: string;    // For virtual nodes: the label of the ancestor REM that owns the source property (for hover display)
   isDescriptorProperty?: boolean; // For virtual interfaces: whether the source has the "Interface" tag
+  isExported?: boolean;  // Whether this rem has the "Export" tag (for thicker border display)
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
@@ -109,19 +111,43 @@ type VirtualAttributeData = {
   byOwner: Record<string, VirtualAttributeInfo[]>;
 };
 
+// Timeout signal for graceful early termination of long-running loads
+type TimeoutSignal = {
+  startTime: number;
+  timeoutMs: number;
+  timedOut: boolean;
+};
+
+const LOAD_TIMEOUT_MS = 60000; // 60 seconds
+
+function createTimeoutSignal(timeoutMs: number = LOAD_TIMEOUT_MS): TimeoutSignal {
+  return {
+    startTime: Date.now(),
+    timeoutMs,
+    timedOut: false,
+  };
+}
+
+function isTimedOut(signal: TimeoutSignal): boolean {
+  if (signal.timedOut) return true;
+  if (Date.now() - signal.startTime > signal.timeoutMs) {
+    signal.timedOut = true;
+    return true;
+  }
+  return false;
+}
+
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
 
 const MINDMAP_STATE_KEY = "mindmap_widget_state";
 
+// Testing flag: set to false to clear saved state instead of restoring
+const restoreFromSynced = false;
+
 type MindMapState = {
   loadedRemId: string;
-  loadedRemName: string;
   attributeType: 'property' | 'interface';
-  collapsedNodes: string[];
-  hiddenAttributes: string[];
-  hiddenVirtualAttributes: string[];
-  nodePositions: Record<string, { x: number; y: number }>;
   historyStack: string[];
 };
 
@@ -408,8 +434,14 @@ const NODE_TYPES = {
 async function buildAncestorNodes(
   plugin: RNPlugin,
   rem: PluginRem,
-  visited: Set<string>
+  visited: Set<string>,
+  signal?: TimeoutSignal
 ): Promise<HierarchyNode[]> {
+  // Check timeout before starting work
+  if (signal && isTimedOut(signal)) {
+    return [];
+  }
+  
   const remName = await getRemText(plugin, rem);
   const parents = await getParentClass(plugin, rem);
   console.log(`[buildAncestorNodes] Rem: "${remName}" (${rem._id}), parents:`, parents.map(p => p._id));
@@ -424,10 +456,16 @@ async function buildAncestorNodes(
 
   const result: HierarchyNode[] = [];
   for (const parent of uniqueParents.values()) {
+    // Check timeout before each recursive call
+    if (signal && isTimedOut(signal)) {
+      break;
+    }
+    
     visited.add(parent._id);
-    const [name, ancestors] = await Promise.all([
+    const [name, ancestors, isExported] = await Promise.all([
       getRemText(plugin, parent),
-      buildAncestorNodes(plugin, parent, visited),
+      buildAncestorNodes(plugin, parent, visited, signal),
+      hasTag(plugin, parent, "Export"),
     ]);
     console.log(`[buildAncestorNodes]   Added parent "${name}" with ${ancestors.length} ancestors`);
     result.push({
@@ -436,6 +474,7 @@ async function buildAncestorNodes(
       richText: parent.text,
       remRef: parent,
       children: ancestors,
+      isExported,
     });
   }
 
@@ -461,8 +500,14 @@ async function getStructuralDescendantChildren(plugin: RNPlugin, rem: PluginRem)
 async function buildDescendantNodes(
   plugin: RNPlugin,
   rem: PluginRem,
-  visited: Set<string>
+  visited: Set<string>,
+  signal?: TimeoutSignal
 ): Promise<HierarchyNode[]> {
+  // Check timeout before starting work
+  if (signal && isTimedOut(signal)) {
+    return [];
+  }
+  
   const [extendsChildren, structuralChildren] = await Promise.all([
     getExtendsChildren(plugin, rem),
     getStructuralDescendantChildren(plugin, rem),
@@ -480,13 +525,19 @@ async function buildDescendantNodes(
 
   const result: HierarchyNode[] = [];
   for (const child of childMap.values()) {
+    // Check timeout before each recursive call
+    if (signal && isTimedOut(signal)) {
+      break;
+    }
+    
     // Skip property descriptors - they should not appear in the graph as structural children
     if (await isPropertyDescriptor(plugin, child)) continue;
     
     visited.add(child._id);
-    const [name, descendants] = await Promise.all([
+    const [name, descendants, isExported] = await Promise.all([
       getRemText(plugin, child),
-      buildDescendantNodes(plugin, child, visited),
+      buildDescendantNodes(plugin, child, visited, signal),
+      hasTag(plugin, child, "Export"),
     ]);
     result.push({
       id: child._id,
@@ -494,6 +545,7 @@ async function buildDescendantNodes(
       richText: child.text,
       remRef: child,
       children: descendants,
+      isExported,
     });
   }
 
@@ -596,12 +648,12 @@ function layoutSubtreeHorizontal(
     y = stored.y;
   }
 
-  const style = getNodeStyle('rem', collapsed.has(node.id), false);
+  const style = getNodeStyle('rem', collapsed.has(node.id), false, undefined, undefined, node.isExported);
 
   const graphNode: GraphNode = {
     id: node.id,
     position: { x, y },
-    data: { label: node.name, richText: node.richText, remId: node.id, kind: "rem" },
+    data: { label: node.name, richText: node.richText, remId: node.id, kind: "rem", isExported: node.isExported },
     style,
     draggable: true,
     selectable: true,
@@ -795,7 +847,8 @@ async function createGraphData(
   nodePositions: Map<string, { x: number; y: number }>,
   kind: 'property' | 'interface' | 'directProperty',
   secondaryAttributeData?: AttributeData,
-  secondaryKind?: 'property' | 'interface' | 'directProperty'
+  secondaryKind?: 'property' | 'interface' | 'directProperty',
+  signal?: TimeoutSignal
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   const centerStored = nodePositions?.get(centerId);
   const centerGraphNode: GraphNode = {
@@ -887,11 +940,12 @@ async function createGraphData(
       }
     }
     
-    while (newParentIds.size > 0) {
+    while (newParentIds.size > 0 && !(signal && isTimedOut(signal))) {
       const toResolve = [...newParentIds];
       newParentIds = new Set();
       
       for (const parentId of toResolve) {
+        if (signal && isTimedOut(signal)) break;
         if (childToParentsMap[parentId]) continue;
         
         const parentRem = await plugin.rem.findOne(parentId);
@@ -958,11 +1012,11 @@ async function createGraphData(
   // First integrate secondary (directProperty) data if provided
   let result = { nodes, edges };
   if (secondaryAttributeData && secondaryKind) {
-    result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants);
+    result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants, signal);
   }
   
   // Then integrate primary attribute data (property or interface)
-  result = await integrateAttributeGraph(plugin, result.nodes, result.edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants);
+  result = await integrateAttributeGraph(plugin, result.nodes, result.edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants, signal);
   
   return result;
 }
@@ -1186,7 +1240,8 @@ async function integrateAttributeGraph(
   kind?: 'property' | 'interface' | 'directProperty',
   centerId?: string,
   ancestors?: HierarchyNode[],
-  descendants?: HierarchyNode[]
+  descendants?: HierarchyNode[],
+  signal?: TimeoutSignal
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   if (!attributeData || !collapsed || !kind) {
     return { nodes, edges };
@@ -1400,11 +1455,12 @@ async function integrateAttributeGraph(
       }
     }
     
-    while (newParentIds.size > 0) {
+    while (newParentIds.size > 0 && !(signal && isTimedOut(signal))) {
       const toResolve = [...newParentIds];
       newParentIds = new Set();
       
       for (const parentId of toResolve) {
+        if (signal && isTimedOut(signal)) break;
         if (childToParentsMap[parentId]) continue;
         
         const parentRem = await plugin.rem.findOne(parentId);
@@ -1712,11 +1768,16 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
-async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string): Promise<AttributeData> {
+async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
 
   async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false, parentId?: string): Promise<AttributeNodeInfo[]> {
+    // Check timeout before processing
+    if (signal && isTimedOut(signal)) {
+      return [];
+    }
+    
     if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
       return [];
     }
@@ -1734,6 +1795,11 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     }
     const attrs: AttributeNodeInfo[] = [];
     for (const attr of childrenRems) {
+      // Check timeout in the loop
+      if (signal && isTimedOut(signal)) {
+        break;
+      }
+      
       if (skipTopLevelForId && attr._id === skipTopLevelForId) continue;
       const labelRaw = await getRemText(plugin, attr);
       const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
@@ -1767,6 +1833,11 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
 
   const uniqueRems = [...new Map(rems.map((r) => [r._id, r])).values()];
   for (const rem of uniqueRems) {
+    // Check timeout before processing each rem
+    if (signal && isTimedOut(signal)) {
+      break;
+    }
+    
     const attrs = await collectAttributes(rem, rem._id);
     if (attrs.length > 0) byOwner[rem._id] = attrs;
   }
@@ -2440,6 +2511,12 @@ async function loadMindMapState(
   plugin: RNPlugin
 ): Promise<MindMapState | null> {
   try {
+    // If restoreFromSynced is false, clear storage and return null
+    if (!restoreFromSynced) {
+      await plugin.storage.setSynced(MINDMAP_STATE_KEY, null);
+      return null;
+    }
+    
     const state = await plugin.storage.getSynced(MINDMAP_STATE_KEY);
     if (state && typeof state === "object" && "loadedRemId" in state) {
       return state as MindMapState;
@@ -2476,6 +2553,7 @@ function MindmapWidget() {
   const [attributeType, setAttributeType] = useState<'property' | 'interface'>('property');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isPartialLoad, setIsPartialLoad] = useState<boolean>(false);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
@@ -2502,19 +2580,9 @@ function MindmapWidget() {
   useEffect(() => {
     if (!isInitialized || !loadedRemId) return;
 
-    const nodePositionsObj: Record<string, { x: number; y: number }> = {};
-    nodePositionsRef.current.forEach((pos, id) => {
-      nodePositionsObj[id] = pos;
-    });
-
     const stateToSave: MindMapState = {
       loadedRemId,
-      loadedRemName,
       attributeType,
-      collapsedNodes: Array.from(collapsedNodes),
-      hiddenAttributes: Array.from(hiddenAttributes),
-      hiddenVirtualAttributes: Array.from(hiddenVirtualAttributes),
-      nodePositions: nodePositionsObj,
       historyStack,
     };
 
@@ -2522,142 +2590,12 @@ function MindmapWidget() {
   }, [
     isInitialized,
     loadedRemId,
-    loadedRemName,
     attributeType,
-    collapsedNodes,
-    hiddenAttributes,
-    hiddenVirtualAttributes,
     historyStack,
-    nodes,
     plugin,
   ]);
 
   // Load saved state on mount
-  useEffect(() => {
-    let cancelled = false;
-
-    async function restoreState() {
-      const savedState = await loadMindMapState(plugin);
-      if (cancelled) return;
-
-      if (savedState && savedState.loadedRemId) {
-        // Restore node positions
-        const positionsMap = new Map<string, { x: number; y: number }>();
-        if (savedState.nodePositions) {
-          Object.entries(savedState.nodePositions).forEach(([id, pos]) => {
-            positionsMap.set(id, pos);
-          });
-        }
-        nodePositionsRef.current = positionsMap;
-
-        // Set state values that don't depend on loading
-        setAttributeType(savedState.attributeType || 'property');
-        setHistoryStack(savedState.historyStack || []);
-
-        // Verify the rem still exists before trying to load
-        const rem = await plugin.rem.findOne(savedState.loadedRemId);
-        if (cancelled) return;
-
-        if (rem) {
-          // Load the hierarchy with the saved rem
-          setLoading(true);
-          setError(null);
-          try {
-            // Use separate visited sets to avoid race conditions between parallel builds
-            const visitedAncestors = new Set<string>([rem._id]);
-            const visitedDescendants = new Set<string>([rem._id]);
-            const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
-              getRemText(plugin, rem),
-              buildAncestorNodes(plugin, rem, visitedAncestors),
-              buildDescendantNodes(plugin, rem, visitedDescendants),
-            ]);
-
-            if (cancelled) return;
-
-            const centerLabel = name || "(Untitled Rem)";
-            const remsForAttributes = collectRemsForProperties(
-              rem,
-              ancestorTreesResult,
-              descendantTreesResult
-            );
-            const [properties, interfacesRaw] = await Promise.all([
-              buildAttributeData(plugin, remsForAttributes, true),
-              buildAttributeData(plugin, remsForAttributes, false),
-            ]);
-
-            // Split interfaces into regular interfaces and direct properties (Property-tagged)
-            const { regularInterfaces: interfacesUnfiltered, directProperties } = splitInterfaceData(interfacesRaw);
-            // Filter interfaces to only show those with Export tag (or with exported descendants)
-            const interfaces = filterExportedInterfaces(interfacesUnfiltered);
-
-            if (cancelled) return;
-
-            setAncestorTrees(ancestorTreesResult);
-            setDescendantTrees(descendantTreesResult);
-            setDescendantOwnerMap(buildDescendantOwnerMap(descendantTreesResult));
-            setPropertyData(properties);
-            setInterfaceData(interfaces);
-            setDirectPropertyData(directProperties);
-            setLoadedRemId(rem._id);
-            setLoadedRemName(centerLabel);
-            setLoadedRemRichText(rem.text);
-
-            // Restore collapsed and hidden from saved state
-            setCollapsedNodes(new Set(savedState.collapsedNodes || []));
-            setHiddenAttributes(new Set(savedState.hiddenAttributes || []));
-            setHiddenVirtualAttributes(new Set(savedState.hiddenVirtualAttributes || []));
-
-            // Build parent map
-            const newParentMap = new Map<string, string>();
-            const buildRemParentMap = (forest: HierarchyNode[]) => {
-              const stack: { node: HierarchyNode; parent?: string }[] = forest.map((n) => ({ node: n }));
-              while (stack.length) {
-                const { node, parent } = stack.pop()!;
-                if (parent) newParentMap.set(node.id, parent);
-                node.children.forEach((child) => stack.push({ node: child, parent: node.id }));
-              }
-            };
-            buildRemParentMap(ancestorTreesResult);
-            buildRemParentMap(descendantTreesResult);
-
-            const buildAttrParentMap = (attrs: AttributeNodeInfo[], parentNodeId: string, kind: 'property' | 'interface' | 'directProperty') => {
-              attrs.forEach((p) => {
-                const attrNodeId = attributeNodeId(kind, p.id);
-                newParentMap.set(attrNodeId, parentNodeId);
-                buildAttrParentMap(p.children, attrNodeId, kind);
-              });
-            };
-            Object.entries(properties?.byOwner || {}).forEach(([ownerId, attrs]) => {
-              buildAttrParentMap(attrs, ownerId, 'property');
-            });
-            Object.entries(interfaces?.byOwner || {}).forEach(([ownerId, attrs]) => {
-              buildAttrParentMap(attrs, ownerId, 'interface');
-            });
-            Object.entries(directProperties?.byOwner || {}).forEach(([ownerId, attrs]) => {
-              buildAttrParentMap(attrs, ownerId, 'directProperty');
-            });
-            setParentMap(newParentMap);
-          } catch (err) {
-            console.error("Error restoring mindmap state:", err);
-          } finally {
-            if (!cancelled) {
-              setLoading(false);
-            }
-          }
-        }
-      }
-
-      if (!cancelled) {
-        setIsInitialized(true);
-      }
-    }
-
-    restoreState();
-    return () => {
-      cancelled = true;
-    };
-  }, [plugin]);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -2730,6 +2668,7 @@ function MindmapWidget() {
     async (remId: string, ancestorsOnly?: boolean) => {
       setLoading(true);
       setError(null);
+      setIsPartialLoad(false);
       setPropertyData(null);
       setInterfaceData(null);
       setDirectPropertyData(null);
@@ -2737,6 +2676,10 @@ function MindmapWidget() {
       setHiddenVirtualAttributes(new Set<string>());
       setNodes([]);
       setEdges([]);
+      
+      // Create timeout signal for graceful termination
+      const timeoutSignal = createTimeoutSignal();
+      
       try {
         const rem = await plugin.rem.findOne(remId);
         if (!rem) {
@@ -2749,8 +2692,8 @@ function MindmapWidget() {
         const visitedDescendants = new Set<string>([rem._id]);
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
-          buildAncestorNodes(plugin, rem, visitedAncestors),
-          ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visitedDescendants),
+          buildAncestorNodes(plugin, rem, visitedAncestors, timeoutSignal),
+          ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visitedDescendants, timeoutSignal),
         ]);
 
         // 1.2 Collect Properties
@@ -2761,8 +2704,8 @@ function MindmapWidget() {
           descendantTreesResult
         );
         const [properties, interfacesRaw] = await Promise.all([
-          buildAttributeData(plugin, remsForAttributes, true),
-          buildAttributeData(plugin, remsForAttributes, false),
+          buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal),
+          buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal),
         ]);
 
         // Split interfaces into regular interfaces and direct properties (Property-tagged)
@@ -2832,11 +2775,16 @@ function MindmapWidget() {
           }
         }
         
-        while (newParentIds.size > 0) {
+        while (newParentIds.size > 0 && !isTimedOut(timeoutSignal)) {
           const toResolve = [...newParentIds];
           newParentIds = new Set();
           
           for (const parentId of toResolve) {
+            // Check timeout inside the loop
+            if (isTimedOut(timeoutSignal)) {
+              break;
+            }
+            
             if (childToParentsMap[parentId]) continue;
             
             const parentRem = await plugin.rem.findOne(parentId);
@@ -2973,9 +2921,17 @@ function MindmapWidget() {
           nodePositionsRef.current,
           primaryKind,
           secondaryData ?? undefined,
-          secondaryKind
+          secondaryKind,
+          timeoutSignal
         );
         const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+        
+        // Check if timeout occurred and set partial load flag
+        if (timeoutSignal.timedOut) {
+          setIsPartialLoad(true);
+          console.log('[loadHierarchy] Timeout occurred - showing partial results');
+        }
+        
         setNodes(graph.nodes);
         storePositions(graph.nodes);
         setEdges(updatedEdges);
@@ -2988,6 +2944,40 @@ function MindmapWidget() {
     },
     [plugin, storePositions, attributeType]
   );
+
+  // Load saved state on mount - must be after loadHierarchy is defined
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreState() {
+      const savedState = await loadMindMapState(plugin);
+      if (cancelled) return;
+
+      if (savedState && savedState.loadedRemId) {
+        // Restore user preferences
+        setAttributeType(savedState.attributeType || 'property');
+        setHistoryStack(savedState.historyStack || []);
+
+        // Verify the rem still exists before trying to load
+        const rem = await plugin.rem.findOne(savedState.loadedRemId);
+        if (cancelled) return;
+
+        if (rem) {
+          // Delegate to loadHierarchy which has timeout support
+          await loadHierarchy(rem._id);
+        }
+      }
+
+      if (!cancelled) {
+        setIsInitialized(true);
+      }
+    }
+
+    restoreState();
+    return () => {
+      cancelled = true;
+    };
+  }, [plugin, loadHierarchy]);
 
   useEffect(() => {
     if (loadedRemId && !loading) {
@@ -4331,6 +4321,20 @@ function MindmapWidget() {
       </div>
 
       {error && <div style={{ color: "#dc2626", marginBottom: 8 }}>{error}</div>}
+      
+      {isPartialLoad && !error && (
+        <div style={{ 
+          color: "#b45309", 
+          background: "#fef3c7", 
+          padding: "8px 12px", 
+          borderRadius: 4, 
+          marginBottom: 8,
+          border: "1px solid #fcd34d",
+          fontSize: 13
+        }}>
+          ⚠️ Loading timed out after 60 seconds. Showing partial results.
+        </div>
+      )}
 
       <div
         style={{

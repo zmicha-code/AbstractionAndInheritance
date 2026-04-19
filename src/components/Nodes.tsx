@@ -36,6 +36,17 @@ export const REM_NODE_STYLE_CENTER: React.CSSProperties = {
   fontWeight: 600,
 };
 
+// Exported REM Node Styles (thicker border for rems with Export tag)
+export const REM_NODE_STYLE_EXPORTED: React.CSSProperties = {
+  ...REM_NODE_STYLE,
+  border: "2px solid #6b7fd8",
+};
+
+export const REM_NODE_STYLE_EXPORTED_COLLAPSED: React.CSSProperties = {
+  ...REM_NODE_STYLE_COLLAPSED,
+  border: "2px solid #6b7fd8",
+};
+
 // Property Node Styles
 export const PROPERTY_NODE_STYLE: React.CSSProperties = {
   ...MINDMAP_NODE_BASE,
@@ -147,13 +158,16 @@ export function getNodeStyle(
   isCollapsed: boolean,
   isCenter: boolean = false,
   width?: number,
-  isDescriptorProperty?: boolean
+  isDescriptorProperty?: boolean,
+  isExported?: boolean
 ): React.CSSProperties {
   let style: React.CSSProperties;
   
   if (kind === 'rem') {
     if (isCenter) {
       style = REM_NODE_STYLE_CENTER;
+    } else if (isExported) {
+      style = isCollapsed ? REM_NODE_STYLE_EXPORTED_COLLAPSED : REM_NODE_STYLE_EXPORTED;
     } else {
       style = isCollapsed ? REM_NODE_STYLE_COLLAPSED : REM_NODE_STYLE;
     }
