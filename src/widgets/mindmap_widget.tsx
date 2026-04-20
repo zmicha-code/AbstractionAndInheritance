@@ -118,7 +118,7 @@ type TimeoutSignal = {
   timedOut: boolean;
 };
 
-const LOAD_TIMEOUT_MS = 60000; // 60 seconds
+const LOAD_TIMEOUT_MS = 30000; // 30 seconds
 
 function createTimeoutSignal(timeoutMs: number = LOAD_TIMEOUT_MS): TimeoutSignal {
   return {
@@ -851,11 +851,12 @@ async function createGraphData(
   signal?: TimeoutSignal
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   const centerStored = nodePositions?.get(centerId);
+  const isCenterCollapsed = collapsed.has(centerId);
   const centerGraphNode: GraphNode = {
     id: centerId,
     position: centerStored ? { ...centerStored } : { x: 0, y: 0 },
     data: { label: centerLabel, richText: centerRichText, remId: centerId, kind: "rem" },
-    style: getNodeStyle('rem', false, true),
+    style: getNodeStyle('rem', isCenterCollapsed, true),
     draggable: true,
     selectable: true,
     type: "remNode",
@@ -974,43 +975,47 @@ async function createGraphData(
     virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
   }
 
-  layoutForestHorizontal(
-    ancestors,
-    centerGraphNode,
-    "left",
-    "ancestor",
-    nodes,
-    edges,
-    existingIds,
-    collapsed,
-    nodePositions,
-    attributeData,
-    hiddenAttributes,
-    kind,
-    virtualData,
-    hiddenVirtualAttributes
-  );
+  // Skip layout of ancestors/descendants when center node is collapsed
+  if (!isCenterCollapsed) {
+    layoutForestHorizontal(
+      ancestors,
+      centerGraphNode,
+      "left",
+      "ancestor",
+      nodes,
+      edges,
+      existingIds,
+      collapsed,
+      nodePositions,
+      attributeData,
+      hiddenAttributes,
+      kind,
+      virtualData,
+      hiddenVirtualAttributes
+    );
 
-  layoutForestHorizontal(
-    descendants,
-    centerGraphNode,
-    "right",
-    "descendant",
-    nodes,
-    edges,
-    existingIds,
-    collapsed,
-    nodePositions,
-    attributeData,
-    hiddenAttributes,
-    kind,
-    virtualData,
-    hiddenVirtualAttributes
-  );
+    layoutForestHorizontal(
+      descendants,
+      centerGraphNode,
+      "right",
+      "descendant",
+      nodes,
+      edges,
+      existingIds,
+      collapsed,
+      nodePositions,
+      attributeData,
+      hiddenAttributes,
+      kind,
+      virtualData,
+      hiddenVirtualAttributes
+    );
+  }
 
+  // Always integrate attributes (even when center collapsed, show center's attributes)
   // For combined property view, lay out in order: directProperty, property, virtualDirectProperty, virtualProperty
-  // First integrate secondary (directProperty) data if provided
   let result = { nodes, edges };
+  // First integrate secondary (directProperty) data if provided
   if (secondaryAttributeData && secondaryKind) {
     result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants, signal);
   }
@@ -1962,6 +1967,26 @@ function buildVirtualAttributeData(
     return ancestors;
   };
 
+  // Helper to get all children for an owner from byId (includes non-exported interfaces)
+  // This is used for implementation tracking - we need to see ALL children, not just exported ones
+  const getChildrenForOwnerFromById = (ownerId: string): AttributeNodeInfo[] => {
+    const children: AttributeNodeInfo[] = [];
+    for (const detail of Object.values(attributeData.byId)) {
+      if (detail.ownerNodeId === ownerId) {
+        children.push({
+          id: detail.id,
+          label: '', // Not needed for implementation tracking
+          extends: detail.extends,
+          children: [], // Not needed for implementation tracking
+          isPrivate: detail.isPrivate,
+          isDescriptorProperty: detail.isDescriptorProperty,
+          isExported: detail.isExported,
+        });
+      }
+    }
+    return children;
+  };
+
   // Helper to recursively build virtual children from AttributeNodeInfo children
   const buildVirtualChildren = (children: AttributeNodeInfo[], ownerRemId: string, sourceRemId: string, sourceRemLabel: string): VirtualAttributeInfo[] => {
     return children.map(child => ({
@@ -2052,9 +2077,13 @@ function buildVirtualAttributeData(
   // Build implementedByOwner: for each rem, collect what it "implements" through:
   // 1. Its structural children (interfaces) and their extends
   // 2. Its own extends relationships (what it directly inherits from via hierarchy/extends)
+  // IMPORTANT: Use byId to get ALL children (including non-exported) for implementation tracking
   // IMPORTANT: Filter out hierarchy descendants (REMs in the tree) from attrs
   // because a child REM implementing an interface should NOT mark it as implemented for the parent
-  for (const [ownerId, attrs] of Object.entries(attributeData.byOwner)) {
+  const allOwnerIds = new Set(Object.values(attributeData.byId).map(d => d.ownerNodeId));
+  for (const ownerId of allOwnerIds) {
+    // Get ALL children from byId (includes non-exported interfaces)
+    const attrs = getChildrenForOwnerFromById(ownerId);
     // Filter out any attrs that are actually hierarchy REMs (not interface attributes)
     const actualInterfaceAttrs = attrs.filter(attr => !allHierarchyRemIds.has(attr.id));
     implementedByOwner[ownerId] = collectImplementedIds(actualInterfaceAttrs);
@@ -2152,9 +2181,11 @@ function buildVirtualAttributeData(
     // Helper: Get all base interfaces that are "covered" by a REM's direct interface children
     // These are interfaces that should NOT appear as virtual because they're already implemented
     // via an interface child that extends them (directly or transitively)
+    // NOTE: Uses byId to include non-exported children in implementation tracking
     const getImplementedBaseInterfaces = (): Set<string> => {
       const implementedBases = new Set<string>();
-      const remChildren = attributeData.byOwner[remId] || [];
+      // Use byId-based lookup to include non-exported children
+      const remChildren = getChildrenForOwnerFromById(remId);
       
       for (const child of remChildren) {
         // Add all interfaces this child extends (direct and transitive)
@@ -3448,18 +3479,13 @@ function MindmapWidget() {
       const data = (node.data ?? undefined) as GraphNodeData | undefined;
       const targetId = data?.remId ?? node.id;
 
-      // Center node: keep current behavior, but don't call updateGraph() directly
+      // Center node: toggle collapse to hide/show all ancestors and descendants
       if (targetId === loadedRemId) {
-        // const collectImmediateChildren = (trees: HierarchyNode[]): string[] => {
-        //   const ids: string[] = [];
-        //   for (const tree of trees) {
-        //     ids.push(tree.id);
-        //     ids.push(...tree.children.map((c) => c.id));
-        //   }
-        //   return ids;
-        // };
-        // const immediateDescendantIds = collectImmediateChildren(descendantTrees);
-        // setCollapsedNodes(new Set(immediateDescendantIds));
+        const hasHierarchy = ancestorTrees.length > 0 || descendantTrees.length > 0;
+        if (!hasHierarchy) return;
+        const next = new Set(collapsedNodes);
+        next.has(loadedRemId) ? next.delete(loadedRemId) : next.add(loadedRemId);
+        setCollapsedNodes(next);
         return;
       }
 
@@ -3778,13 +3804,13 @@ function MindmapWidget() {
         
         // If source interface is exported, also export the new implementation
         // This ensures the inheritance chain properly propagates export requirements
-        const sourceIsExported = await hasTag(plugin, sourceProperty, "Export");
-        if (sourceIsExported) {
-          const exportTag = await getTag(plugin, sourceProperty, "Export");
-          if (exportTag) {
-            await newRem.addTag(exportTag);
-          }
-        }
+        //const sourceIsExported = await hasTag(plugin, sourceProperty, "Export");
+        //if (sourceIsExported) {
+        //  const exportTag = await getTag(plugin, sourceProperty, "Export");
+        //  if (exportTag) {
+        //    await newRem.addTag(exportTag);
+        //  }
+        //}
         
         // Update descendant interfaces that extend the same source interface
         // to now extend this newly created interface instead.

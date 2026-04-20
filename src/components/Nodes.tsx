@@ -36,6 +36,11 @@ export const REM_NODE_STYLE_CENTER: React.CSSProperties = {
   fontWeight: 600,
 };
 
+export const REM_NODE_STYLE_CENTER_COLLAPSED: React.CSSProperties = {
+  ...REM_NODE_STYLE_CENTER,
+  background: "#94a3b8",  // Grey-blue to indicate collapsed state
+};
+
 // Exported REM Node Styles (thicker border for rems with Export tag)
 export const REM_NODE_STYLE_EXPORTED: React.CSSProperties = {
   ...REM_NODE_STYLE,
@@ -165,7 +170,7 @@ export function getNodeStyle(
   
   if (kind === 'rem') {
     if (isCenter) {
-      style = REM_NODE_STYLE_CENTER;
+      style = isCollapsed ? REM_NODE_STYLE_CENTER_COLLAPSED : REM_NODE_STYLE_CENTER;
     } else if (isExported) {
       style = isCollapsed ? REM_NODE_STYLE_EXPORTED_COLLAPSED : REM_NODE_STYLE_EXPORTED;
     } else {
