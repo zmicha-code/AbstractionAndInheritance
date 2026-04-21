@@ -123,7 +123,7 @@ export async function getExtendsChildren(plugin: RNPlugin, rem: Rem): Promise<Re
     })
   );
   return meta
-    .filter(({ type }) => type !== RemType.DESCRIPTOR)
+    .filter(({ type }) => type !== RemType.DESCRIPTOR && type !== RemType.PORTAL)
     .map(({ child }) => child);
 }
 
@@ -1048,16 +1048,29 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
     rem.getParentRem(),
     getExtendsParents(plugin, rem),
   ]);
+  const directParentType = directParent ? await directParent.getType() : undefined;
+
+  const filteredExtendsParentsMeta = await Promise.all(
+    extendsParents.map(async (parent: Rem) => ({
+      parent,
+      type: await parent.getType(),
+    }))
+  );
+  const filteredExtendsParents = filteredExtendsParentsMeta
+    .filter(({ type }: { type: RemType; parent: Rem }) => type !== RemType.PORTAL)
+    .map(({ parent }: { type: RemType; parent: Rem }) => parent);
+  const filteredDirectParent =
+    directParent && directParentType !== RemType.PORTAL ? directParent : null;
 
   const remName = await getRemText(plugin, rem);
-  const directParentName = directParent ? await getRemText(plugin, directParent) : "(null)";
-  console.log(`[getParentClass] Rem: "${remName}" (${rem._id}), isDocument=${isDocument}, directParent="${directParentName}" (${directParent?._id}), extendsParents=${extendsParents.length}`);
+  const directParentName = filteredDirectParent ? await getRemText(plugin, filteredDirectParent) : "(null)";
+  console.log(`[getParentClass] Rem: "${remName}" (${rem._id}), isDocument=${isDocument}, directParent="${directParentName}" (${filteredDirectParent?._id}), extendsParents=${filteredExtendsParents.length}`);
 
   // Property (document): inherits via extends, otherwise defines a new type
   if (isDocument) {
-    if (extendsParents.length > 0) {
+    if (filteredExtendsParents.length > 0) {
       console.log(`[getParentClass]   Document with extends, returning extendsParents`);
-      return extendsParents;
+      return filteredExtendsParents;
     }
     console.log(`[getParentClass]   Document without extends, returning [self]`);
     return [rem];
@@ -1065,8 +1078,8 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
 
   // Interface (non-document): first the structural parent, then any extends parents
   const result: Rem[] = [];
-  if (directParent) result.push(directParent);
-  for (const p of extendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
+  if (filteredDirectParent) result.push(filteredDirectParent);
+  for (const p of filteredExtendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
   console.log(`[getParentClass]   Non-document, returning ${result.length} parents`);
   return result.length > 0 ? result : [rem];
 }
@@ -1318,11 +1331,15 @@ export async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[
   const cleanChildren: Rem[] = [];
 
   for (const childRem of childrenRems) {
-    const [text, type] = await Promise.all<[string, RemType]>([
+    const [text, type]: [string, RemType] = await Promise.all([
       getRemText(plugin, childRem),
       childRem.getType(),
     ]);
     const normalized = text.trim().toLowerCase();
+
+    if (type === RemType.PORTAL) {
+      continue;
+    }
 
     if (type === RemType.DESCRIPTOR && normalized === "extends") {
       continue;

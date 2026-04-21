@@ -105,6 +105,7 @@ type VirtualAttributeInfo = {
   sourceRemLabel: string;        // The label of the ancestor REM (for hover display)
   children: VirtualAttributeInfo[];  // Children from the source property (for expandable virtual interfaces)
   isDescriptorProperty: boolean;    // Whether the source attribute has the "Interface" tag
+  extendsVirtualIds: string[];   // IDs of parent virtual attrs that this one extends (for same owner REM)
 };
 
 type VirtualAttributeData = {
@@ -415,6 +416,12 @@ function VirtualPropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
         position={Position.Right}
         id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
         style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id={ATTRIBUTE_SOURCE_BOTTOM_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...BOTTOM_HANDLE_STYLE }}
       />
       <RichTextLabel richText={data.richText} fallback={data.label} style={{ width: '100%', fontStyle: 'italic' }} prefix="⊕ " />
     </div>
@@ -1786,6 +1793,9 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     if (!isSubAttribute && skipTopLevelForId && owner._id === skipTopLevelForId) {
       return [];
     }
+    if (await owner.getType() === RemType.PORTAL) {
+      return [];
+    }
     let childrenRems: PluginRem[];
     if (!isSubAttribute) {
       const children = await getCleanChildren(plugin, owner);
@@ -1806,6 +1816,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       }
       
       if (skipTopLevelForId && attr._id === skipTopLevelForId) continue;
+      if (await attr.getType() === RemType.PORTAL) continue;
       const labelRaw = await getRemText(plugin, attr);
       const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
       let extendsIds: string[] = [];
@@ -1843,6 +1854,9 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       break;
     }
     
+    if (await rem.getType() === RemType.PORTAL) {
+      continue;
+    }
     const attrs = await collectAttributes(rem, rem._id);
     if (attrs.length > 0) byOwner[rem._id] = attrs;
   }
@@ -1998,6 +2012,7 @@ function buildVirtualAttributeData(
       sourceRemId: sourceRemId,
       sourceRemLabel: sourceRemLabel,
       children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel),
+      extendsVirtualIds: [],  // Virtual children don't track extends for now
       isDescriptorProperty: child.isDescriptorProperty,
     }));
   };
@@ -2249,30 +2264,59 @@ function buildVirtualAttributeData(
               // Property-tagged interfaces should not have virtual children (they are "terminal")
               children: prop.isDescriptorProperty ? [] : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel),
               isDescriptorProperty: prop.isDescriptorProperty,
+              extendsVirtualIds: [],  // Will be computed in second pass
             });
           }
         }
       }
     }
 
-    // Second pass: filter out properties that are ancestors of other candidates
-    // (keep only the "closest" / most derived unimplemented property)
-    const candidatePropertyIds = new Set(candidateVirtualAttrs.map(v => v.sourcePropertyId));
-    const virtualAttrs = candidateVirtualAttrs.filter(candidate => {
-      // Check if any other candidate property extends from this one
-      for (const otherCandidate of candidateVirtualAttrs) {
-        if (otherCandidate.sourcePropertyId === candidate.sourcePropertyId) continue;
-        const otherAncestors = getPropertyAncestors(otherCandidate.sourcePropertyId);
-        if (otherAncestors.has(candidate.sourcePropertyId)) {
-          // This candidate is an ancestor of another candidate, so filter it out
-          return false;
+    // Second pass: depends on kind
+    // For interfaces: keep all candidates, but wrap ancestor labels in parentheses
+    // For properties: filter out ancestor candidates (original behavior)
+    if (kind === 'interface') {
+      // Find which candidates are ancestors of other candidates
+      const candidateSourceIds = new Set(candidateVirtualAttrs.map(c => c.sourcePropertyId));
+      const ancestorSourceIds = new Set<string>();
+      for (const candidate of candidateVirtualAttrs) {
+        const ancestors = getPropertyAncestors(candidate.sourcePropertyId);
+        for (const ancestorId of ancestors) {
+          if (candidateSourceIds.has(ancestorId)) {
+            ancestorSourceIds.add(ancestorId);
+          }
         }
       }
-      return true;
-    });
-
-    if (virtualAttrs.length > 0) {
-      byOwner[remId] = virtualAttrs;
+      // Wrap ancestor labels in parentheses
+      for (const candidate of candidateVirtualAttrs) {
+        if (ancestorSourceIds.has(candidate.sourcePropertyId)) {
+          candidate.label = `(${candidate.label})`;
+          candidate.richText = undefined;  // Clear richText so label is used instead
+        }
+      }
+      // Keep all candidates for interfaces
+      if (candidateVirtualAttrs.length > 0) {
+        byOwner[remId] = candidateVirtualAttrs;
+      }
+    } else {
+      // For properties: filter out ancestor candidates (original behavior)
+      // A candidate is an "ancestor" if another candidate's sourcePropertyId extends it
+      const candidateSourceIds = new Set(candidateVirtualAttrs.map(c => c.sourcePropertyId));
+      const ancestorSourceIds = new Set<string>();
+      for (const candidate of candidateVirtualAttrs) {
+        const ancestors = getPropertyAncestors(candidate.sourcePropertyId);
+        for (const ancestorId of ancestors) {
+          if (candidateSourceIds.has(ancestorId)) {
+            ancestorSourceIds.add(ancestorId);
+          }
+        }
+      }
+      // Filter to keep only the most derived candidates
+      const filteredVirtualAttrs = candidateVirtualAttrs.filter(
+        c => !ancestorSourceIds.has(c.sourcePropertyId)
+      );
+      if (filteredVirtualAttrs.length > 0) {
+        byOwner[remId] = filteredVirtualAttrs;
+      }
     }
   }
 
@@ -2715,6 +2759,25 @@ function MindmapWidget() {
         const rem = await plugin.rem.findOne(remId);
         if (!rem) {
           throw new Error("Unable to load the selected rem.");
+        }
+
+        if ((await rem.getType()) === RemType.PORTAL) {
+          setAncestorTrees([]);
+          setDescendantTrees([]);
+          setDescendantOwnerMap({});
+          setCollapsedNodes(new Set<string>());
+          setPropertyData({ byOwner: {}, byId: {} });
+          setInterfaceData({ byOwner: {}, byId: {} });
+          setDirectPropertyData({ byOwner: {}, byId: {} });
+          setHiddenAttributes(new Set<string>());
+          setHiddenVirtualAttributes(new Set<string>());
+          setLoadedRemId(rem._id);
+          setLoadedRemName((await getRemText(plugin, rem)) || "(Untitled Rem)");
+          setLoadedRemRichText(rem.text);
+          setParentMap(new Map());
+          setNodes([]);
+          setEdges([]);
+          return;
         }
 
         // 1.1 Collect Ancestors and Descendants
