@@ -77,6 +77,7 @@ type AttributeNodeInfo = {
   id: string;
   label: string;
   richText?: RichTextInterface;  // Rich text for formatted rendering
+  hierarchyLevel?: number;       // -1 for owner direct attributes, >=0 for inherited branches
   extends: string[];
   children: AttributeNodeInfo[];
   isPrivate: boolean;
@@ -99,6 +100,7 @@ type VirtualAttributeInfo = {
   id: string;                    // Unique virtual ID (e.g., "virtual:ownerRemId:sourcePropertyId")
   label: string;                 // Same label as source property
   richText?: RichTextInterface;  // Rich text for formatted rendering
+  hierarchyLevel?: number;       // Derived from owner/source hierarchy relation
   sourcePropertyId: string;      // The ancestor property this inherits from
   ownerRemId: string;            // The REM that should implement this
   sourceRemId: string;           // The ancestor REM that owns the source property
@@ -273,6 +275,15 @@ function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface'
   const padding = 2 * 10;
   const minWidth = kind === 'rem' ? 140 : 160;
   return Math.max(minWidth, textWidth + padding);
+}
+
+function compareByHierarchyThenLabel<T extends { label: string; hierarchyLevel?: number }>(a: T, b: T): number {
+  const levelA = a.hierarchyLevel ?? 0;
+  const levelB = b.hierarchyLevel ?? 0;
+  if (levelA !== levelB) {
+    return levelA - levelB;
+  }
+  return a.label.localeCompare(b.label);
 }
 
 function RemFlowNode({ data }: NodeProps<GraphNodeData>) {
@@ -1053,7 +1064,7 @@ function layoutAttributeTree(
 ) {
   const visible = hiddenAttributes ? attributes.filter((info) => !hiddenAttributes.has(info.id)) : attributes;
   if (visible.length === 0) return;
-  const sorted = [...visible].sort((a, b) => a.label.localeCompare(b.label));
+  const sorted = [...visible].sort(compareByHierarchyThenLabel);
   const ownerData = ownerNode.data as GraphNodeData;
   const ownerStyleWidth = ownerNode.style?.width;
   const ownerWidth =
@@ -1142,7 +1153,7 @@ function layoutAttributeDescendants(
     : children;
   if (visibleChildren.length === 0) return;
 
-  const sorted = [...visibleChildren].sort((a, b) => a.label.localeCompare(b.label));
+  const sorted = [...visibleChildren].sort(compareByHierarchyThenLabel);
   const parentData = parentNode.data as GraphNodeData;
   const parentStyleWidth = parentNode.style?.width;
   const parentWidth =
@@ -1784,7 +1795,13 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
 
-  async function collectAttributes(owner: PluginRem, ownerNodeId: string, isSubAttribute: boolean = false, parentId?: string): Promise<AttributeNodeInfo[]> {
+  async function collectAttributes(
+    owner: PluginRem,
+    ownerNodeId: string,
+    isSubAttribute: boolean = false,
+    parentId?: string,
+    parentHierarchyLevel: number = -1
+  ): Promise<AttributeNodeInfo[]> {
     // Check timeout before processing
     if (signal && isTimedOut(signal)) {
       return [];
@@ -1832,14 +1849,34 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       // Skip non-exported sub-attributes entirely (children of interfaces)
       // Top-level interfaces are kept for byId tracking, but their non-exported children are not collected
       if (isSubAttribute && !topLevelIsDocument && !isExported) continue;
+      const hierarchyLevel = isSubAttribute ? parentHierarchyLevel : -1;
       // Property descriptors should not have any children (they are terminal)
       const skipChildren = isDescriptorProperty;
-      const subChildren = skipChildren ? [] : await collectAttributes(attr, attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id), true, attr._id);
-      attrs.push({ id: attr._id, label, richText: attr.text, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty, isExported });
+      const subChildren = skipChildren
+        ? []
+        : await collectAttributes(
+            attr,
+            attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id),
+            true,
+            attr._id,
+            hierarchyLevel
+          );
+      attrs.push({ id: attr._id, label, richText: attr.text, hierarchyLevel, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty, isExported });
     }
-    attrs.sort((a, b) => a.label.localeCompare(b.label));
+    attrs.sort(compareByHierarchyThenLabel);
     attrs.forEach((p) => {
-      const detail = { id: p.id, label: p.label, extends: p.extends, ownerNodeId, hasChildren: p.children.length > 0, parentId, isPrivate: p.isPrivate, isDescriptorProperty: p.isDescriptorProperty, isExported: p.isExported };
+      const detail = {
+        id: p.id,
+        label: p.label,
+        hierarchyLevel: p.hierarchyLevel,
+        extends: p.extends,
+        ownerNodeId,
+        hasChildren: p.children.length > 0,
+        parentId,
+        isPrivate: p.isPrivate,
+        isDescriptorProperty: p.isDescriptorProperty,
+        isExported: p.isExported,
+      };
       if (!byId[p.id]) {
         byId[p.id] = detail;
       }
@@ -1990,6 +2027,7 @@ function buildVirtualAttributeData(
         children.push({
           id: detail.id,
           label: '', // Not needed for implementation tracking
+          hierarchyLevel: detail.hierarchyLevel,
           extends: detail.extends,
           children: [], // Not needed for implementation tracking
           isPrivate: detail.isPrivate,
@@ -2002,16 +2040,23 @@ function buildVirtualAttributeData(
   };
 
   // Helper to recursively build virtual children from AttributeNodeInfo children
-  const buildVirtualChildren = (children: AttributeNodeInfo[], ownerRemId: string, sourceRemId: string, sourceRemLabel: string): VirtualAttributeInfo[] => {
+  const buildVirtualChildren = (
+    children: AttributeNodeInfo[],
+    ownerRemId: string,
+    sourceRemId: string,
+    sourceRemLabel: string,
+    parentHierarchyLevel: number
+  ): VirtualAttributeInfo[] => {
     return children.map(child => ({
       id: `virtual:${ownerRemId}:${child.id}`,
       label: child.label,
       richText: child.richText,
+      hierarchyLevel: parentHierarchyLevel,
       sourcePropertyId: child.id,
       ownerRemId: ownerRemId,
       sourceRemId: sourceRemId,
       sourceRemLabel: sourceRemLabel,
-      children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel),
+      children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel, parentHierarchyLevel),
       extendsVirtualIds: [],  // Virtual children don't track extends for now
       isDescriptorProperty: child.isDescriptorProperty,
     }));
@@ -2172,6 +2217,57 @@ function buildVirtualAttributeData(
     return result;
   };
 
+  const ancestorDistanceCache = new Map<string, Map<string, number>>();
+
+  const getAncestorDistanceMap = (nodeId: string): Map<string, number> => {
+    const cached = ancestorDistanceCache.get(nodeId);
+    if (cached) return cached;
+
+    const distances = new Map<string, number>();
+    distances.set(nodeId, 0);
+    const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
+
+    while (queue.length > 0) {
+      const current = queue.shift() as { id: string; depth: number };
+      const parents = childToParentsMap[current.id];
+      if (!parents || parents.size === 0) continue;
+      for (const parentId of parents) {
+        const nextDepth = current.depth + 1;
+        const prev = distances.get(parentId);
+        if (prev !== undefined && prev <= nextDepth) continue;
+        distances.set(parentId, nextDepth);
+        queue.push({ id: parentId, depth: nextDepth });
+      }
+    }
+
+    ancestorDistanceCache.set(nodeId, distances);
+    return distances;
+  };
+
+  const getHierarchyLevel = (ownerRemId: string, sourceRemId: string): number => {
+    if (ownerRemId === sourceRemId) {
+      return -1;
+    }
+
+    const ownerDistances = getAncestorDistanceMap(ownerRemId);
+    const sourceDistances = getAncestorDistanceMap(sourceRemId);
+    let minSharedDepth = Number.POSITIVE_INFINITY;
+
+    for (const sharedId of sourceDistances.keys()) {
+      const depthFromOwner = ownerDistances.get(sharedId);
+      if (depthFromOwner === undefined || depthFromOwner <= 0) continue;
+      if (depthFromOwner < minSharedDepth) {
+        minSharedDepth = depthFromOwner;
+      }
+    }
+
+    if (!Number.isFinite(minSharedDepth)) {
+      return 0;
+    }
+
+    return Math.max(0, minSharedDepth - 1);
+  };
+
   // Now for each REM, find which ancestor properties are NOT implemented
   // We need to only show the "closest" unimplemented property in the chain
   // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
@@ -2253,16 +2349,20 @@ function buildVirtualAttributeData(
           const existingVirtual = candidateVirtualAttrs.find(v => v.sourcePropertyId === prop.id);
           if (!existingVirtual) {
             const sourceRemLabel = ancestorIdToName[ancestorId] || ancestorId;
+            const hierarchyLevel = getHierarchyLevel(remId, ancestorId);
             candidateVirtualAttrs.push({
               id: `virtual:${remId}:${prop.id}`,
               label: prop.label,
               richText: prop.richText,
+              hierarchyLevel,
               sourcePropertyId: prop.id,
               ownerRemId: remId,
               sourceRemId: ancestorId,
               sourceRemLabel: sourceRemLabel,
               // Property-tagged interfaces should not have virtual children (they are "terminal")
-              children: prop.isDescriptorProperty ? [] : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel),
+              children: prop.isDescriptorProperty
+                ? []
+                : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel, hierarchyLevel),
               isDescriptorProperty: prop.isDescriptorProperty,
               extendsVirtualIds: [],  // Will be computed in second pass
             });
@@ -2336,7 +2436,7 @@ function layoutVirtualAttributeDescendants(
 ) {
   if (children.length === 0) return;
 
-  const sorted = [...children].sort((a, b) => a.label.localeCompare(b.label));
+  const sorted = [...children].sort(compareByHierarchyThenLabel);
   const parentData = parentNode.data as GraphNodeData;
   const parentStyleWidth = parentNode.style?.width;
   const parentWidth =
@@ -2475,10 +2575,9 @@ function layoutVirtualAttributes(
     ownerHeight +
     ATTRIBUTE_VERTICAL_MARGIN +
     existingAttrsCount * ATTRIBUTE_VERTICAL_SPACING;
+  const sortedVirtualAttrs = [...virtualAttrs].sort(compareByHierarchyThenLabel);
 
-  const sorted = [...virtualAttrs].sort((a, b) => a.label.localeCompare(b.label));
-
-  sorted.forEach((info, index) => {
+  sortedVirtualAttrs.forEach((info, index) => {
     const nodeId = info.id;
     if (existingNodeIds.has(nodeId)) return;
 
