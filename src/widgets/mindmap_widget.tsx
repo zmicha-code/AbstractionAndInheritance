@@ -143,6 +143,163 @@ function isTimedOut(signal: TimeoutSignal): boolean {
 type GraphNode = Node<GraphNodeData>;
 type GraphEdge = Edge;
 
+type AttributeKind = 'property' | 'interface' | 'directProperty';
+
+type VirtualDataByKind = Partial<Record<AttributeKind, VirtualAttributeData>>;
+
+type LoadComputationContext = {
+  childToParentsMap?: Record<string, Set<string>>;
+  virtualDataByKind: VirtualDataByKind;
+  parentClassCache: Map<string, PluginRem[]>;
+  remLookupCache: Map<string, PluginRem | null>;
+};
+
+function createLoadComputationContext(): LoadComputationContext {
+  return {
+    virtualDataByKind: {},
+    parentClassCache: new Map<string, PluginRem[]>(),
+    remLookupCache: new Map<string, PluginRem | null>(),
+  };
+}
+
+function collectRemRefs(forest: HierarchyNode[]): Map<string, PluginRem> {
+  const remRefs = new Map<string, PluginRem>();
+  const stack = [...forest];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.remRef) {
+      remRefs.set(node.id, node.remRef);
+    }
+    if (node.children?.length) {
+      stack.push(...node.children);
+    }
+  }
+  return remRefs;
+}
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<void>,
+  signal?: TimeoutSignal
+): Promise<void> {
+  if (items.length === 0) return;
+  let index = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+
+  const worker = async () => {
+    while (index < items.length) {
+      if (signal && isTimedOut(signal)) return;
+      const currentIndex = index;
+      index += 1;
+      await mapper(items[currentIndex], currentIndex);
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, worker));
+}
+
+async function getParentClassCached(
+  plugin: RNPlugin,
+  rem: PluginRem,
+  context: LoadComputationContext
+): Promise<PluginRem[]> {
+  const cached = context.parentClassCache.get(rem._id);
+  if (cached) {
+    return cached;
+  }
+  const parents = await getParentClass(plugin, rem);
+  context.parentClassCache.set(rem._id, parents);
+  return parents;
+}
+
+async function findRemCached(
+  plugin: RNPlugin,
+  remId: string,
+  context: LoadComputationContext
+): Promise<PluginRem | null> {
+  if (context.remLookupCache.has(remId)) {
+    return context.remLookupCache.get(remId) ?? null;
+  }
+  const rem = (await plugin.rem.findOne(remId)) as PluginRem | null;
+  context.remLookupCache.set(remId, rem);
+  return rem;
+}
+
+async function buildCompleteChildToParentsMap(
+  plugin: RNPlugin,
+  centerId: string,
+  ancestors: HierarchyNode[],
+  descendants: HierarchyNode[],
+  context: LoadComputationContext,
+  signal?: TimeoutSignal
+): Promise<Record<string, Set<string>>> {
+  if (context.childToParentsMap) {
+    return context.childToParentsMap;
+  }
+
+  const childToParentsMap: Record<string, Set<string>> = {};
+  const ancestorRemRefs = collectRemRefs(ancestors);
+  const descendantRemRefs = collectRemRefs(descendants);
+
+  const populateParents = async (entries: Array<[string, PluginRem]>) => {
+    await mapWithConcurrency(entries, 10, async ([remId, remRef]) => {
+      if (signal && isTimedOut(signal)) return;
+      const parents = await getParentClassCached(plugin, remRef, context);
+      childToParentsMap[remId] = new Set(
+        parents
+          .filter((p) => p)
+          .map((p) => p._id)
+      );
+    }, signal);
+  };
+
+  await populateParents([...ancestorRemRefs.entries()]);
+  childToParentsMap[centerId] = new Set(ancestors.map((a) => a.id));
+  await populateParents([...descendantRemRefs.entries()]);
+
+  let newParentIds = new Set<string>();
+  for (const parentIds of Object.values(childToParentsMap)) {
+    for (const parentId of parentIds) {
+      if (!childToParentsMap[parentId]) {
+        newParentIds.add(parentId);
+      }
+    }
+  }
+
+  while (newParentIds.size > 0 && !(signal && isTimedOut(signal))) {
+    const toResolve = [...newParentIds];
+    newParentIds = new Set();
+
+    await mapWithConcurrency(toResolve, 10, async (parentId) => {
+      if (signal && isTimedOut(signal)) return;
+      if (childToParentsMap[parentId]) return;
+
+      const parentRem = await findRemCached(plugin, parentId, context);
+      if (!parentRem) {
+        childToParentsMap[parentId] = new Set();
+        return;
+      }
+
+      const grandparents = await getParentClassCached(plugin, parentRem, context);
+      childToParentsMap[parentId] = new Set(
+        grandparents
+          .filter((p) => p)
+          .map((p) => p._id)
+      );
+
+      for (const gp of grandparents) {
+        if (gp && !childToParentsMap[gp._id]) {
+          newParentIds.add(gp._id);
+        }
+      }
+    }, signal);
+  }
+
+  context.childToParentsMap = childToParentsMap;
+  return childToParentsMap;
+}
+
 const MINDMAP_STATE_KEY = "mindmap_widget_state";
 
 // Testing flag: set to false to clear saved state instead of restoring
@@ -453,6 +610,7 @@ async function buildAncestorNodes(
   plugin: RNPlugin,
   rem: PluginRem,
   visited: Set<string>,
+  computationContext?: LoadComputationContext,
   signal?: TimeoutSignal
 ): Promise<HierarchyNode[]> {
   // Check timeout before starting work
@@ -461,7 +619,9 @@ async function buildAncestorNodes(
   }
   
   const remName = await getRemText(plugin, rem);
-  const parents = await getParentClass(plugin, rem);
+  const parents = computationContext
+    ? await getParentClassCached(plugin, rem, computationContext)
+    : await getParentClass(plugin, rem);
   console.log(`[buildAncestorNodes] Rem: "${remName}" (${rem._id}), parents:`, parents.map(p => p._id));
   const uniqueParents = new Map<string, PluginRem>();
   for (const parent of parents) {
@@ -482,7 +642,7 @@ async function buildAncestorNodes(
     visited.add(parent._id);
     const [name, ancestors, isExported] = await Promise.all([
       getRemText(plugin, parent),
-      buildAncestorNodes(plugin, parent, visited, signal),
+      buildAncestorNodes(plugin, parent, visited, computationContext, signal),
       hasTag(plugin, parent, "Export"),
     ]);
     console.log(`[buildAncestorNodes]   Added parent "${name}" with ${ancestors.length} ancestors`);
@@ -866,8 +1026,10 @@ async function createGraphData(
   kind: 'property' | 'interface' | 'directProperty',
   secondaryAttributeData?: AttributeData,
   secondaryKind?: 'property' | 'interface' | 'directProperty',
+  computationContext?: LoadComputationContext,
   signal?: TimeoutSignal
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+  const context = computationContext ?? createLoadComputationContext();
   const centerStored = nodePositions?.get(centerId);
   const isCenterCollapsed = collapsed.has(centerId);
   const centerGraphNode: GraphNode = {
@@ -885,112 +1047,21 @@ async function createGraphData(
   const existingIds = new Set<string>([centerId]);
 
   // Pre-compute virtual attribute data for height calculations
-  // We need to build childToParentsMap first
   let virtualData: VirtualAttributeData | undefined;
   if (attributeData) {
-    // Build a complete parent map for all REMs (ancestors AND descendants) by looking up their actual parents
-    const childToParentsMap: Record<string, Set<string>> = {};
-    
-    // Collect all REM refs from a forest (ancestors or descendants)
-    const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
-      const remRefs = new Map<string, PluginRem>();
-      const stack = [...forest];
-      while (stack.length > 0) {
-        const node = stack.pop()!;
-        if (node.remRef) {
-          remRefs.set(node.id, node.remRef);
-        }
-        if (node.children?.length) {
-          stack.push(...node.children);
-        }
-      }
-      return remRefs;
-    };
-    
-    const ancestorRemRefs = collectRemRefs(ancestors);
-    const descendantRemRefs = collectRemRefs(descendants);
-    
-    // Combine all REM refs (ancestors + descendants + center)
-    const allRemRefs = new Map<string, PluginRem>();
-    for (const [id, ref] of ancestorRemRefs) {
-      allRemRefs.set(id, ref);
-    }
-    for (const [id, ref] of descendantRemRefs) {
-      allRemRefs.set(id, ref);
-    }
-    
-    // For each ancestor REM, look up its actual parents using getParentClass
-    // NOTE: We include ALL parents (not just those in hierarchy) so that
-    // implementedByOwner correctly tracks what each rem implements through extends
-    for (const [remId, remRef] of ancestorRemRefs) {
-      const parents = await getParentClass(plugin, remRef);
-      childToParentsMap[remId] = new Set(
-        parents
-          .filter(p => p)
-          .map(p => p._id)
+    virtualData = context.virtualDataByKind[kind];
+    if (!virtualData) {
+      const childToParentsMap = await buildCompleteChildToParentsMap(
+        plugin,
+        centerId,
+        ancestors,
+        descendants,
+        context,
+        signal
       );
+      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+      context.virtualDataByKind[kind] = virtualData;
     }
-    
-    // Add center's parents (the root ancestor nodes)
-    childToParentsMap[centerId] = new Set(ancestors.map(a => a.id));
-    
-    // For each descendant REM, look up its actual parents using getParentClass
-    // This properly handles multiple inheritance via "extends"
-    // NOTE: We include ALL parents (not just those in hierarchy) so that
-    // implementedByOwner correctly tracks what each rem implements through extends
-    for (const [remId, remRef] of descendantRemRefs) {
-      const parents = await getParentClass(plugin, remRef);
-      childToParentsMap[remId] = new Set(
-        parents
-          .filter(p => p)
-          .map(p => p._id)
-      );
-    }
-    
-    // Recursively fetch parents for any parent IDs not yet in childToParentsMap
-    // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
-    // even when InterfaceB is not in the current hierarchy tree
-    let newParentIds = new Set<string>();
-    for (const parentIds of Object.values(childToParentsMap)) {
-      for (const parentId of parentIds) {
-        if (!childToParentsMap[parentId]) {
-          newParentIds.add(parentId);
-        }
-      }
-    }
-    
-    while (newParentIds.size > 0 && !(signal && isTimedOut(signal))) {
-      const toResolve = [...newParentIds];
-      newParentIds = new Set();
-      
-      for (const parentId of toResolve) {
-        if (signal && isTimedOut(signal)) break;
-        if (childToParentsMap[parentId]) continue;
-        
-        const parentRem = await plugin.rem.findOne(parentId);
-        if (!parentRem) {
-          // Mark as resolved with empty parents to avoid infinite loop
-          childToParentsMap[parentId] = new Set();
-          continue;
-        }
-        
-        const grandparents = await getParentClass(plugin, parentRem);
-        childToParentsMap[parentId] = new Set(
-          grandparents
-            .filter(p => p)
-            .map(p => p._id)
-        );
-        
-        // Queue any newly discovered parents
-        for (const gp of grandparents) {
-          if (gp && !childToParentsMap[gp._id]) {
-            newParentIds.add(gp._id);
-          }
-        }
-      }
-    }
-    
-    virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
   }
 
   // Skip layout of ancestors/descendants when center node is collapsed
@@ -1035,11 +1106,11 @@ async function createGraphData(
   let result = { nodes, edges };
   // First integrate secondary (directProperty) data if provided
   if (secondaryAttributeData && secondaryKind) {
-    result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants, signal);
+    result = await integrateAttributeGraph(plugin, result.nodes, result.edges, secondaryAttributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, secondaryKind, centerId, ancestors, descendants, context, signal);
   }
   
   // Then integrate primary attribute data (property or interface)
-  result = await integrateAttributeGraph(plugin, result.nodes, result.edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants, signal);
+  result = await integrateAttributeGraph(plugin, result.nodes, result.edges, attributeData, hiddenAttributes, hiddenVirtualAttributes, collapsed, nodePositions, kind, centerId, ancestors, descendants, context, signal);
   
   return result;
 }
@@ -1264,11 +1335,14 @@ async function integrateAttributeGraph(
   centerId?: string,
   ancestors?: HierarchyNode[],
   descendants?: HierarchyNode[],
+  computationContext?: LoadComputationContext,
   signal?: TimeoutSignal
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   if (!attributeData || !collapsed || !kind) {
     return { nodes, edges };
   }
+
+  const context = computationContext ?? createLoadComputationContext();
 
   const existingNodeIds = new Set(nodes.map((node) => node.id));
   const existingEdgeIds = new Set(edges.map((edge) => edge.id));
@@ -1414,102 +1488,19 @@ async function integrateAttributeGraph(
 
   // Build and layout virtual (unimplemented) attributes
   if (centerId && ancestors && descendants) {
-    // Build a complete parent map for all REMs (ancestors AND descendants) by looking up their actual parents
-    // This is needed because the HierarchyNode tree structure may be incomplete
-    // due to the visited set preventing nodes from appearing in multiple branches
-    const childToParentsMap: Record<string, Set<string>> = {};
-    
-    // Collect all REM refs from a forest (ancestors or descendants)
-    const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
-      const remRefs = new Map<string, PluginRem>();
-      const stack = [...forest];
-      while (stack.length > 0) {
-        const node = stack.pop()!;
-        if (node.remRef) {
-          remRefs.set(node.id, node.remRef);
-        }
-        if (node.children?.length) {
-          stack.push(...node.children);
-        }
-      }
-      return remRefs;
-    };
-    
-    const ancestorRemRefs = collectRemRefs(ancestors);
-    const descendantRemRefs = collectRemRefs(descendants);
-    
-    // For each ancestor REM, look up its actual parents using getParentClass
-    // NOTE: We include ALL parents (not just those in hierarchy) so that
-    // implementedByOwner correctly tracks what each rem implements through extends
-    for (const [remId, remRef] of ancestorRemRefs) {
-      const parents = await getParentClass(plugin, remRef);
-      childToParentsMap[remId] = new Set(
-        parents
-          .filter(p => p)
-          .map(p => p._id)
+    let virtualData = context.virtualDataByKind[kind];
+    if (!virtualData) {
+      const childToParentsMap = await buildCompleteChildToParentsMap(
+        plugin,
+        centerId,
+        ancestors,
+        descendants,
+        context,
+        signal
       );
+      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+      context.virtualDataByKind[kind] = virtualData;
     }
-    
-    // Add center's parents (the root ancestor nodes)
-    childToParentsMap[centerId] = new Set(ancestors.map(a => a.id));
-    
-    // For each descendant REM, look up its actual parents using getParentClass
-    // This properly handles multiple inheritance via "extends"
-    // NOTE: We include ALL parents (not just those in hierarchy) so that
-    // implementedByOwner correctly tracks what each rem implements through extends
-    for (const [remId, remRef] of descendantRemRefs) {
-      const parents = await getParentClass(plugin, remRef);
-      childToParentsMap[remId] = new Set(
-        parents
-          .filter(p => p)
-          .map(p => p._id)
-      );
-    }
-    
-    // Recursively fetch parents for any parent IDs not yet in childToParentsMap
-    // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
-    // even when InterfaceB is not in the current hierarchy tree
-    let newParentIds = new Set<string>();
-    for (const parentIds of Object.values(childToParentsMap)) {
-      for (const parentId of parentIds) {
-        if (!childToParentsMap[parentId]) {
-          newParentIds.add(parentId);
-        }
-      }
-    }
-    
-    while (newParentIds.size > 0 && !(signal && isTimedOut(signal))) {
-      const toResolve = [...newParentIds];
-      newParentIds = new Set();
-      
-      for (const parentId of toResolve) {
-        if (signal && isTimedOut(signal)) break;
-        if (childToParentsMap[parentId]) continue;
-        
-        const parentRem = await plugin.rem.findOne(parentId);
-        if (!parentRem) {
-          // Mark as resolved with empty parents to avoid infinite loop
-          childToParentsMap[parentId] = new Set();
-          continue;
-        }
-        
-        const grandparents = await getParentClass(plugin, parentRem);
-        childToParentsMap[parentId] = new Set(
-          grandparents
-            .filter(p => p)
-            .map(p => p._id)
-        );
-        
-        // Queue any newly discovered parents
-        for (const gp of grandparents) {
-          if (gp && !childToParentsMap[gp._id]) {
-            newParentIds.add(gp._id);
-          }
-        }
-      }
-    }
-    
-    const virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
     
     for (const [ownerId, virtualAttrs] of Object.entries(virtualData.byOwner)) {
       const ownerNode = baseNodeMap.get(ownerId);
@@ -1563,7 +1554,7 @@ async function integrateAttributeGraph(
 
       let currentRem: PluginRem | null = null;
       try {
-        currentRem = (await plugin.rem.findOne(currentId)) as PluginRem | null;
+        currentRem = await findRemCached(plugin, currentId, context);
       } catch (_) {
         currentRem = null;
       }
@@ -1653,7 +1644,7 @@ async function integrateAttributeGraph(
       
       let rem: PluginRem | null = null;
       try {
-        rem = await plugin.rem.findOne(remId) as PluginRem | null;
+        rem = await findRemCached(plugin, remId, context);
       } catch (_) {
         continue;
       }
@@ -1711,13 +1702,59 @@ async function integrateAttributeGraph(
   return { nodes, edges };
 }
 
-async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: GraphEdge[]): Promise<GraphEdge[]> {
+async function addMissingRemEdges(
+  plugin: RNPlugin,
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  childToParentsMap?: Record<string, Set<string>>,
+  computationContext?: LoadComputationContext
+): Promise<GraphEdge[]> {
   const visibleRemIds = new Set(nodes.filter(n => n.type === "remNode").map(n => n.id));
   const edgeMap = new Map(edges.map(e => [`${e.source}->${e.target}`, e.id]));
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const newEdges = [];
+  const context = computationContext;
+  const newEdges: GraphEdge[] = [];
+
+  const addEdgeIfMissing = (sourceId: string, targetId: string) => {
+    const edgeId = `${sourceId}->${targetId}`;
+    if (edgeMap.has(edgeId)) return;
+    const sourceNode = nodeMap.get(sourceId);
+    const targetNode = nodeMap.get(targetId);
+    let sourceHandle = REM_SOURCE_RIGHT_HANDLE;
+    let targetHandle = REM_TARGET_LEFT_HANDLE;
+    if (sourceNode && targetNode && sourceNode.position.x > targetNode.position.x) {
+      sourceHandle = REM_SOURCE_LEFT_HANDLE;
+      targetHandle = REM_TARGET_RIGHT_HANDLE;
+    }
+    newEdges.push({
+      id: edgeId,
+      source: sourceId,
+      target: targetId,
+      sourceHandle,
+      targetHandle,
+      type: "randomOffset",
+      markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+      style: { stroke: getColorForNode(sourceId) }
+    });
+    edgeMap.set(edgeId, edgeId);
+  };
+
+  if (childToParentsMap) {
+    for (const childId of visibleRemIds) {
+      const parents = childToParentsMap[childId];
+      if (!parents) continue;
+      for (const parentId of parents) {
+        if (!visibleRemIds.has(parentId)) continue;
+        addEdgeIfMissing(parentId, childId);
+      }
+    }
+    return [...edges, ...newEdges];
+  }
+
   for (const remId of visibleRemIds) {
-    const rem = await plugin.rem.findOne(remId);
+    const rem = context
+      ? await findRemCached(plugin, remId, context)
+      : await plugin.rem.findOne(remId);
     if (!rem) continue;
     const [extendsC, structuralC] = await Promise.all([
       getExtendsChildren(plugin, rem),
@@ -1725,27 +1762,7 @@ async function addMissingRemEdges(plugin: RNPlugin, nodes: GraphNode[], edges: G
     ]);
     const childrenIds = [...new Set([...extendsC, ...structuralC].filter(c => c).map(c => c._id).filter(id => visibleRemIds.has(id)))];
     for (const childId of childrenIds) {
-      const edgeId = `${rem._id}->${childId}`;
-      if (!edgeMap.has(edgeId)) {
-        const sourceNode = nodeMap.get(rem._id);
-        const targetNode = nodeMap.get(childId);
-        let sourceHandle = REM_SOURCE_RIGHT_HANDLE;
-        let targetHandle = REM_TARGET_LEFT_HANDLE;
-        if (sourceNode && targetNode && sourceNode.position.x > targetNode.position.x) {
-          sourceHandle = REM_SOURCE_LEFT_HANDLE;
-          targetHandle = REM_TARGET_RIGHT_HANDLE;
-        }
-        newEdges.push({
-          id: edgeId,
-          source: rem._id,
-          target: childId,
-          sourceHandle,
-          targetHandle,
-          type: "randomOffset",
-          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-          style: { stroke: getColorForNode(rem._id) }
-        });
-      }
+      addEdgeIfMissing(rem._id, childId);
     }
   }
   return [...edges, ...newEdges];
@@ -2738,6 +2755,7 @@ function MindmapWidget() {
 
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const hiddenAttributeOffsetsRef = useRef<Map<string, { dx: number; dy: number }>>(new Map());
+  const loadComputationContextRef = useRef<LoadComputationContext>(createLoadComputationContext());
 
   const storePositions = useCallback((nodeList: GraphNode[]) => {
     for (const node of nodeList) {
@@ -2814,9 +2832,16 @@ function MindmapWidget() {
       nodePositionsRef.current,
       primaryKind,
       secondaryData ?? undefined,
-      secondaryKind
+      secondaryKind,
+      loadComputationContextRef.current
     );
-    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    const updatedEdges = await addMissingRemEdges(
+      plugin,
+      graph.nodes,
+      graph.edges,
+      loadComputationContextRef.current.childToParentsMap,
+      loadComputationContextRef.current
+    );
     
     // Update parentMap to include virtual property nodes
     setParentMap((prevMap) => {
@@ -2840,6 +2865,7 @@ function MindmapWidget() {
 
   const loadHierarchy = useCallback(
     async (remId: string, ancestorsOnly?: boolean) => {
+      loadComputationContextRef.current = createLoadComputationContext();
       setLoading(true);
       setError(null);
       setIsPartialLoad(false);
@@ -2855,7 +2881,7 @@ function MindmapWidget() {
       const timeoutSignal = createTimeoutSignal();
       
       try {
-        const rem = await plugin.rem.findOne(remId);
+        const rem = await findRemCached(plugin, remId, loadComputationContextRef.current);
         if (!rem) {
           throw new Error("Unable to load the selected rem.");
         }
@@ -2885,7 +2911,7 @@ function MindmapWidget() {
         const visitedDescendants = new Set<string>([rem._id]);
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
-          buildAncestorNodes(plugin, rem, visitedAncestors, timeoutSignal),
+          buildAncestorNodes(plugin, rem, visitedAncestors, loadComputationContextRef.current, timeoutSignal),
           ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visitedDescendants, timeoutSignal),
         ]);
 
@@ -2924,84 +2950,15 @@ function MindmapWidget() {
           }
         }
 
-        // 1.4 Build virtual attribute data and collapse virtual properties/interfaces with children
-        // Helper to collect all REM refs from a forest
-        const collectRemRefs = (forest: HierarchyNode[]): Map<string, PluginRem> => {
-          const remRefs = new Map<string, PluginRem>();
-          const stack = [...forest];
-          while (stack.length > 0) {
-            const node = stack.pop()!;
-            if (node.remRef) {
-              remRefs.set(node.id, node.remRef);
-            }
-            if (node.children?.length) {
-              stack.push(...node.children);
-            }
-          }
-          return remRefs;
-        };
-
-        // Build childToParentsMap for virtual attribute computation
-        const childToParentsMap: Record<string, Set<string>> = {};
-        const ancestorRemRefs = collectRemRefs(ancestorTreesResult);
-        const descendantRemRefs = collectRemRefs(descendantTreesResult);
-
-        for (const [remIdKey, remRef] of ancestorRemRefs) {
-          const parents = await getParentClass(plugin, remRef);
-          childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
-        }
-        childToParentsMap[rem._id] = new Set(ancestorTreesResult.map(a => a.id));
-        for (const [remIdKey, remRef] of descendantRemRefs) {
-          const parents = await getParentClass(plugin, remRef);
-          childToParentsMap[remIdKey] = new Set(parents.filter(p => p).map(p => p._id));
-        }
-
-        // Recursively fetch parents for any parent IDs not yet in childToParentsMap
-        // This ensures transitive ancestors (e.g., InterfaceB -> InterfaceA) are tracked
-        // even when InterfaceB is not in the current hierarchy tree
-        let newParentIds = new Set<string>();
-        for (const parentIds of Object.values(childToParentsMap)) {
-          for (const parentId of parentIds) {
-            if (!childToParentsMap[parentId]) {
-              newParentIds.add(parentId);
-            }
-          }
-        }
-        
-        while (newParentIds.size > 0 && !isTimedOut(timeoutSignal)) {
-          const toResolve = [...newParentIds];
-          newParentIds = new Set();
-          
-          for (const parentId of toResolve) {
-            // Check timeout inside the loop
-            if (isTimedOut(timeoutSignal)) {
-              break;
-            }
-            
-            if (childToParentsMap[parentId]) continue;
-            
-            const parentRem = await plugin.rem.findOne(parentId);
-            if (!parentRem) {
-              // Mark as resolved with empty parents to avoid infinite loop
-              childToParentsMap[parentId] = new Set();
-              continue;
-            }
-            
-            const grandparents = await getParentClass(plugin, parentRem);
-            childToParentsMap[parentId] = new Set(
-              grandparents
-                .filter(p => p)
-                .map(p => p._id)
-            );
-            
-            // Queue any newly discovered parents
-            for (const gp of grandparents) {
-              if (gp && !childToParentsMap[gp._id]) {
-                newParentIds.add(gp._id);
-              }
-            }
-          }
-        }
+        // 1.4 Build complete parent map once per load for virtual computations and edge completion
+        const childToParentsMap = await buildCompleteChildToParentsMap(
+          plugin,
+          rem._id,
+          ancestorTreesResult,
+          descendantTreesResult,
+          loadComputationContextRef.current,
+          timeoutSignal
+        );
 
         // Helper to recursively collect virtual IDs with children
         const collectVirtualWithChildren = (attrs: VirtualAttributeInfo[]): string[] => {
@@ -3024,6 +2981,7 @@ function MindmapWidget() {
           'property',
           childToParentsMap
         );
+        loadComputationContextRef.current.virtualDataByKind.property = virtualPropertyData;
 
         for (const virtualAttrs of Object.values(virtualPropertyData.byOwner)) {
           const virtualIds = collectVirtualWithChildren(virtualAttrs);
@@ -3041,6 +2999,7 @@ function MindmapWidget() {
           'interface',
           childToParentsMap
         );
+        loadComputationContextRef.current.virtualDataByKind.interface = virtualInterfaceData;
 
         for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
           const virtualIds = collectVirtualWithChildren(virtualAttrs);
@@ -3115,9 +3074,16 @@ function MindmapWidget() {
           primaryKind,
           secondaryData ?? undefined,
           secondaryKind,
+          loadComputationContextRef.current,
           timeoutSignal
         );
-        const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+        const updatedEdges = await addMissingRemEdges(
+          plugin,
+          graph.nodes,
+          graph.edges,
+          loadComputationContextRef.current.childToParentsMap,
+          loadComputationContextRef.current
+        );
         
         // Check if timeout occurred and set partial load flag
         if (timeoutSignal.timedOut) {
@@ -3403,7 +3369,8 @@ function MindmapWidget() {
       nodePositionsRef.current,
       primaryKind,
       secondaryData ?? undefined,
-      secondaryKind
+      secondaryKind,
+      loadComputationContextRef.current
     );
     let displayNodes = graph.nodes;
     if (allHidden && nextHidden.size === 0) {
@@ -3439,7 +3406,13 @@ function MindmapWidget() {
         return node;
       });
     }
-    const updatedEdges = await addMissingRemEdges(plugin, displayNodes, graph.edges);
+    const updatedEdges = await addMissingRemEdges(
+      plugin,
+      displayNodes,
+      graph.edges,
+      loadComputationContextRef.current.childToParentsMap,
+      loadComputationContextRef.current
+    );
     setHiddenAttributes(nextHidden);
     setHiddenVirtualAttributes(nextHiddenVirtual);
     setNodes(displayNodes);
@@ -3522,7 +3495,8 @@ function MindmapWidget() {
       nodePositionsRef.current,
       primaryKind,
       newSecondaryData ?? undefined,
-      secondaryKind
+      secondaryKind,
+      loadComputationContextRef.current
     );
     const displayNodes = graph.nodes.map((node) => {
       const data = node.data as GraphNodeData;
@@ -3555,7 +3529,13 @@ function MindmapWidget() {
       }
       return node;
     });
-    const updatedEdges = await addMissingRemEdges(plugin, displayNodes, graph.edges);
+    const updatedEdges = await addMissingRemEdges(
+      plugin,
+      displayNodes,
+      graph.edges,
+      loadComputationContextRef.current.childToParentsMap,
+      loadComputationContextRef.current
+    );
     setNodes(displayNodes);
     storePositions(displayNodes);
     setEdges(updatedEdges);
@@ -4061,9 +4041,18 @@ function MindmapWidget() {
       nextHidden,
       nextHiddenVirtual,
       nodePositionsRef.current,
-      'property'
+      'property',
+      undefined,
+      undefined,
+      loadComputationContextRef.current
     );
-    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    const updatedEdges = await addMissingRemEdges(
+      plugin,
+      graph.nodes,
+      graph.edges,
+      loadComputationContextRef.current.childToParentsMap,
+      loadComputationContextRef.current
+    );
     setHiddenAttributes(nextHidden);
     setHiddenVirtualAttributes(nextHiddenVirtual);
     setNodes(graph.nodes);
@@ -4123,9 +4112,18 @@ function MindmapWidget() {
       hiddenAttributes,
       nextHiddenVirtual,
       nodePositionsRef.current,
-      'property'
+      'property',
+      undefined,
+      undefined,
+      loadComputationContextRef.current
     );
-    const updatedEdges = await addMissingRemEdges(plugin, graph.nodes, graph.edges);
+    const updatedEdges = await addMissingRemEdges(
+      plugin,
+      graph.nodes,
+      graph.edges,
+      loadComputationContextRef.current.childToParentsMap,
+      loadComputationContextRef.current
+    );
     setHiddenVirtualAttributes(nextHiddenVirtual);
     setNodes(graph.nodes);
     storePositions(graph.nodes);
@@ -4561,7 +4559,7 @@ function MindmapWidget() {
               zoomOnScroll
               proOptions={{ hideAttribution: true }}
               fitView
-              minZoom={0.3}
+              minZoom={0.1}
               maxZoom={1.4}
               style={{ background: "transparent" }}
             >
