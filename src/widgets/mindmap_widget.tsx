@@ -121,7 +121,7 @@ type TimeoutSignal = {
   timedOut: boolean;
 };
 
-const LOAD_TIMEOUT_MS = 30000; // 30 seconds
+const LOAD_TIMEOUT_MS = 60000; // 30 seconds
 
 function createTimeoutSignal(timeoutMs: number = LOAD_TIMEOUT_MS): TimeoutSignal {
   return {
@@ -1059,7 +1059,7 @@ async function createGraphData(
         context,
         signal
       );
-      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap, new Set([centerId]));
       context.virtualDataByKind[kind] = virtualData;
     }
   }
@@ -1498,7 +1498,7 @@ async function integrateAttributeGraph(
         context,
         signal
       );
-      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap);
+      virtualData = buildVirtualAttributeData(attributeData, centerId, ancestors, descendants, kind, childToParentsMap, new Set([centerId]));
       context.virtualDataByKind[kind] = virtualData;
     }
     
@@ -1997,7 +1997,8 @@ function buildVirtualAttributeData(
   ancestors: HierarchyNode[],
   descendants: HierarchyNode[],
   kind: 'property' | 'interface' | 'directProperty',
-  childToParentsMap: Record<string, Set<string>>
+  childToParentsMap: Record<string, Set<string>>,
+  allowedOwnerIds?: Set<string>
 ): VirtualAttributeData {
   const byOwner: Record<string, VirtualAttributeInfo[]> = {};
 
@@ -2290,6 +2291,9 @@ function buildVirtualAttributeData(
   // (i.e., if ProbB extends ProbA and neither is implemented, only show ProbB)
 
   for (const [remId, ancestorIds] of Object.entries(remAncestorMap)) {
+    // Skip rems that are not in the allowed owner scope (e.g. center-only mode)
+    if (allowedOwnerIds && !allowedOwnerIds.has(remId)) continue;
+
     // Skip generating virtual attributes if this REM itself has the Property tag
     // (Property-tagged interfaces are terminal and don't need to implement virtual interfaces)
     const remDetail = attributeData.byId[remId];
@@ -2979,7 +2983,8 @@ function MindmapWidget() {
           ancestorTreesResult,
           descendantTreesResult,
           'property',
-          childToParentsMap
+          childToParentsMap,
+          new Set([rem._id])
         );
         loadComputationContextRef.current.virtualDataByKind.property = virtualPropertyData;
 
@@ -2997,11 +3002,31 @@ function MindmapWidget() {
           ancestorTreesResult,
           descendantTreesResult,
           'interface',
-          childToParentsMap
+          childToParentsMap,
+          new Set([rem._id])
         );
         loadComputationContextRef.current.virtualDataByKind.interface = virtualInterfaceData;
 
         for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
+          const virtualIds = collectVirtualWithChildren(virtualAttrs);
+          for (const id of virtualIds) {
+            collapsed.add(id);
+          }
+        }
+
+        // Build virtual directProperty data and collapse those with children
+        const virtualDirectPropertyData = buildVirtualAttributeData(
+          directProperties,
+          rem._id,
+          ancestorTreesResult,
+          descendantTreesResult,
+          'directProperty',
+          childToParentsMap,
+          new Set([rem._id])
+        );
+        loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDirectPropertyData;
+
+        for (const virtualAttrs of Object.values(virtualDirectPropertyData.byOwner)) {
           const virtualIds = collectVirtualWithChildren(virtualAttrs);
           for (const id of virtualIds) {
             collapsed.add(id);
