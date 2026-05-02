@@ -141,6 +141,21 @@ export const DIRECT_PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties = {
   background: "#d8b4fe",
 };
 
+// Virtual Interface Group Node Styles (header node grouping virtual interfaces by source REM)
+export const VIRTUAL_INTERFACE_GROUP_NODE_STYLE: React.CSSProperties = {
+  ...MINDMAP_NODE_BASE,
+  background: "#f0fdf4",
+  border: "1px solid #6ee7b7",
+  fontSize: 12,
+  minWidth: 140,
+  fontWeight: 600,
+};
+
+export const VIRTUAL_INTERFACE_GROUP_NODE_STYLE_COLLAPSED: React.CSSProperties = {
+  ...VIRTUAL_INTERFACE_GROUP_NODE_STYLE,
+  background: "#a7f3d0",
+};
+
 // Virtual Direct Property Node Styles (unimplemented interfaces with Property tag)
 export const VIRTUAL_DIRECT_PROPERTY_NODE_STYLE: React.CSSProperties = {
   ...MINDMAP_NODE_BASE,
@@ -159,7 +174,7 @@ export const VIRTUAL_DIRECT_PROPERTY_NODE_STYLE_COLLAPSED: React.CSSProperties =
 
 // Helper to get the appropriate style with optional width
 export function getNodeStyle(
-  kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty',
+  kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty' | 'virtualInterfaceGroup',
   isCollapsed: boolean,
   isCenter: boolean = false,
   width?: number,
@@ -188,6 +203,8 @@ export function getNodeStyle(
     style = isCollapsed ? VIRTUAL_PROPERTY_NODE_STYLE_COLLAPSED : VIRTUAL_PROPERTY_NODE_STYLE;
   } else if (kind === 'virtualInterface' && isDescriptorProperty) {
     style = isCollapsed ? VIRTUAL_INTERFACE_TAGGED_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_TAGGED_NODE_STYLE;
+  } else if (kind === 'virtualInterfaceGroup') {
+    style = isCollapsed ? VIRTUAL_INTERFACE_GROUP_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_GROUP_NODE_STYLE;
   } else {
     style = isCollapsed ? VIRTUAL_INTERFACE_NODE_STYLE_COLLAPSED : VIRTUAL_INTERFACE_NODE_STYLE;
   }

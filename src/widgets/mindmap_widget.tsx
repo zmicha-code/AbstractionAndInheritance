@@ -45,7 +45,7 @@ type GraphNodeData = {
   label: string;
   richText?: RichTextInterface;  // Rich text for formatted rendering (LaTeX, bold, etc.)
   remId: string;
-  kind: "rem" | "property" | "interface" | "virtualProperty" | "virtualInterface" | "directProperty" | "virtualDirectProperty";
+  kind: "rem" | "property" | "interface" | "virtualProperty" | "virtualInterface" | "directProperty" | "virtualDirectProperty" | "virtualInterfaceGroup";
   sourcePropertyId?: string;  // For virtual nodes: the ancestor property this inherits from
   ownerRemId?: string;        // For virtual nodes: the REM that should implement this
   sourceRemLabel?: string;    // For virtual nodes: the label of the ancestor REM that owns the source property (for hover display)
@@ -425,7 +425,7 @@ function getColorForNode(nodeId: string): string {
   return EDGE_COLOR_PALETTE[index];
 }
 
-function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty'): number {
+function estimateNodeWidth(label: string, kind: 'rem' | 'property' | 'interface' | 'virtualProperty' | 'virtualInterface' | 'directProperty' | 'virtualDirectProperty' | 'virtualInterfaceGroup'): number {
   const fontSize = kind === 'rem' ? 13 : 12;
   const avgCharWidth = fontSize * 0.6;
   const textWidth = label.length * avgCharWidth;
@@ -596,6 +596,26 @@ function VirtualPropertyFlowNode({ data }: NodeProps<GraphNodeData>) {
   );
 }
 
+function VirtualInterfaceGroupFlowNode({ data }: NodeProps<GraphNodeData>) {
+  return (
+    <div style={{ ...ATTRIBUTE_CONTAINER_STYLE, cursor: 'pointer' }}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={ATTRIBUTE_TARGET_LEFT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...LEFT_HANDLE_STYLE }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id={ATTRIBUTE_SOURCE_RIGHT_HANDLE}
+        style={{ ...HANDLE_COMMON_STYLE, ...RIGHT_HANDLE_STYLE }}
+      />
+      <RichTextLabel richText={data.richText} fallback={data.label} style={{ width: '100%' }} />
+    </div>
+  );
+}
+
 const NODE_TYPES = {
   remNode: RemFlowNode,
   propertyNode: PropertyFlowNode,
@@ -604,6 +624,7 @@ const NODE_TYPES = {
   virtualPropertyNode: VirtualPropertyFlowNode,
   virtualInterfaceNode: VirtualPropertyFlowNode,
   virtualDirectPropertyNode: VirtualPropertyFlowNode,
+  virtualInterfaceGroupNode: VirtualInterfaceGroupFlowNode,
 };
 
 async function buildAncestorNodes(
@@ -1154,7 +1175,7 @@ function layoutAttributeTree(
     const nodeId = attributeNodeId(kind, info.id);
     if (existingNodeIds.has(nodeId)) return;
     const propertyWidth = estimateNodeWidth(info.label, kind);
-    let posX = ownerNode.position.x + 100;
+    let posX = ownerNode.position.x + 150;
     let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
     const storedPos = nodePositions?.get(nodeId);
     if (storedPos) {
@@ -2596,17 +2617,189 @@ function layoutVirtualAttributes(
     ownerHeight +
     ATTRIBUTE_VERTICAL_MARGIN +
     existingAttrsCount * ATTRIBUTE_VERTICAL_SPACING;
+
+  // For virtualInterface kind: group by sourceRemId and render with group header nodes
+  if (kind === 'interface') {
+    // Build groups: Map<sourceRemId, { sourceRemLabel, minHierarchyLevel, items }>
+    const groupMap = new Map<string, { sourceRemLabel: string; minHierarchyLevel: number; items: VirtualAttributeInfo[] }>();
+    for (const info of virtualAttrs) {
+      const existing = groupMap.get(info.sourceRemId);
+      const level = info.hierarchyLevel ?? 0;
+      if (existing) {
+        existing.items.push(info);
+        if (level < existing.minHierarchyLevel) existing.minHierarchyLevel = level;
+      } else {
+        groupMap.set(info.sourceRemId, {
+          sourceRemLabel: info.sourceRemLabel,
+          minHierarchyLevel: level,
+          items: [info],
+        });
+      }
+    }
+
+    // Sort groups by minHierarchyLevel then by sourceRemLabel
+    const sortedGroups = [...groupMap.entries()].sort(([, a], [, b]) => {
+      if (a.minHierarchyLevel !== b.minHierarchyLevel) return a.minHierarchyLevel - b.minHierarchyLevel;
+      return a.sourceRemLabel.localeCompare(b.sourceRemLabel);
+    });
+
+    let slotOffset = 0; // tracks vertical slots used so far (in ATTRIBUTE_VERTICAL_SPACING units)
+
+    for (const [sourceRemId, group] of sortedGroups) {
+      const groupNodeId = `vgroup:${ownerNode.id}:${sourceRemId}`;
+      const sortedItems = [...group.items].sort(compareByHierarchyThenLabel);
+      const groupSize = sortedItems.length;
+
+      // The group header is vertically centered over its children
+      const groupCenterSlot = slotOffset + (groupSize - 1) / 2;
+      let groupX = ownerNode.position.x + 150;
+      let groupY = baseY + groupCenterSlot * ATTRIBUTE_VERTICAL_SPACING;
+
+      const storedGroupPos = nodePositions?.get(groupNodeId);
+      if (storedGroupPos) {
+        groupX = storedGroupPos.x;
+        groupY = storedGroupPos.y;
+      }
+
+      const isGroupCollapsed = collapsed.has(groupNodeId);
+      const groupStyle = getNodeStyle('virtualInterfaceGroup', isGroupCollapsed, false);
+      let groupNode: GraphNode;
+      if (!existingNodeIds.has(groupNodeId)) {
+        groupNode = {
+          id: groupNodeId,
+          position: { x: groupX, y: groupY },
+          data: {
+            label: group.sourceRemLabel,
+            remId: groupNodeId,
+            kind: 'virtualInterfaceGroup',
+            sourceRemLabel: group.sourceRemLabel,
+          },
+          style: groupStyle,
+          draggable: true,
+          selectable: true,
+          type: 'virtualInterfaceGroupNode',
+        };
+        nodes.push(groupNode);
+        existingNodeIds.add(groupNodeId);
+      } else {
+        groupNode = nodes.find(n => n.id === groupNodeId)!;
+      }
+
+      // Edge: owner → group header (grey solid)
+      const groupEdgeId = `vgroup-link:${ownerNode.id}->${groupNodeId}`;
+      if (!existingEdgeIds.has(groupEdgeId)) {
+        edges.push({
+          id: groupEdgeId,
+          source: ownerNode.id,
+          target: groupNodeId,
+          sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
+          targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+          type: "randomOffset",
+          markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+          style: { stroke: "#9ca3af" },
+        });
+        existingEdgeIds.add(groupEdgeId);
+      }
+
+      // Lay out children to the right of group header (unless group is collapsed)
+      if (!isGroupCollapsed) {
+        const groupWidth =
+          typeof groupNode.style?.width === "number"
+            ? groupNode.style.width
+            : estimateNodeWidth(group.sourceRemLabel, 'virtualInterfaceGroup');
+        const childX = groupX + groupWidth + ATTRIBUTE_HORIZONTAL_SPACING;
+        const startOffset = ((groupSize - 1) / 2) * ATTRIBUTE_VERTICAL_SPACING;
+
+        sortedItems.forEach((info, childIndex) => {
+          const nodeId = info.id;
+          if (existingNodeIds.has(nodeId)) return;
+
+          let posX = childX;
+          let posY = groupY + childIndex * ATTRIBUTE_VERTICAL_SPACING - startOffset;
+
+          const storedPos = nodePositions?.get(nodeId);
+          if (storedPos) {
+            posX = storedPos.x;
+            posY = storedPos.y;
+          }
+
+          const hasChildren = info.children && info.children.length > 0;
+          const isCollapsedItem = collapsed.has(info.id);
+          const nodeStyle = getNodeStyle('virtualInterface', hasChildren && isCollapsedItem, false, undefined, info.isDescriptorProperty);
+
+          nodes.push({
+            id: nodeId,
+            position: { x: posX, y: posY },
+            data: {
+              label: info.label,
+              richText: info.richText,
+              remId: info.id,
+              kind: 'virtualInterface',
+              sourcePropertyId: info.sourcePropertyId,
+              ownerRemId: info.ownerRemId,
+              sourceRemLabel: info.sourceRemLabel,
+              isDescriptorProperty: info.isDescriptorProperty,
+            },
+            style: nodeStyle,
+            draggable: true,
+            selectable: true,
+            type: 'virtualInterfaceNode',
+          });
+          existingNodeIds.add(nodeId);
+
+          const virtualNode = nodes[nodes.length - 1];
+
+          // Edge: group header → child (grey dashed)
+          const childEdgeId = `vgroup-child:${groupNodeId}->${nodeId}`;
+          if (!existingEdgeIds.has(childEdgeId)) {
+            edges.push({
+              id: childEdgeId,
+              source: groupNodeId,
+              target: nodeId,
+              sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+              targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+              type: "randomOffset",
+              markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+              style: { stroke: "#9ca3af", strokeDasharray: "4 2" },
+            });
+            existingEdgeIds.add(childEdgeId);
+          }
+
+          // Recurse into children of the virtual interface node if not collapsed
+          if (hasChildren && !isCollapsedItem) {
+            layoutVirtualAttributeDescendants(
+              virtualNode,
+              info.children,
+              nodes,
+              edges,
+              existingNodeIds,
+              existingEdgeIds,
+              kind,
+              collapsed,
+              nodePositions
+            );
+          }
+        });
+      }
+
+      slotOffset += groupSize;
+    }
+
+    return;
+  }
+
+  // Non-interface kinds: flat layout (unchanged)
   const sortedVirtualAttrs = [...virtualAttrs].sort(compareByHierarchyThenLabel);
 
   sortedVirtualAttrs.forEach((info, index) => {
     const nodeId = info.id;
     if (existingNodeIds.has(nodeId)) return;
 
-    const virtualKind = kind === 'property' ? 'virtualProperty' : kind === 'interface' ? 'virtualInterface' : 'virtualDirectProperty';
+    const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualDirectProperty';
     const hasChildren = info.children && info.children.length > 0;
     const isCollapsed = collapsed.has(info.id);
     const propertyWidth = estimateNodeWidth(info.label, virtualKind);
-    let posX = ownerNode.position.x + 100;
+    let posX = ownerNode.position.x + 150;
     let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
 
     const storedPos = nodePositions?.get(nodeId);
@@ -2650,7 +2843,7 @@ function layoutVirtualAttributes(
         targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-        style: { stroke: "#9ca3af" }, // Grey line (no dash for owner connection)
+        style: { stroke: "#9ca3af" },
       });
       existingEdgeIds.add(ownerEdgeId);
     }
@@ -2669,25 +2862,6 @@ function layoutVirtualAttributes(
         nodePositions
       );
     }
-
-    // Create edge from source property to virtual node (inheritance link)
-    // const sourceNodeId = attributeNodeId(kind, info.sourcePropertyId);
-    // if (existingNodeIds.has(sourceNodeId)) {
-    //   const edgeId = `virtual-link:${info.sourcePropertyId}->${info.id}`;
-    //   if (!existingEdgeIds.has(edgeId)) {
-    //     edges.push({
-    //       id: edgeId,
-    //       source: sourceNodeId,
-    //       target: nodeId,
-    //       sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
-    //       targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
-    //       type: "randomOffset",
-    //       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
-    //       style: { stroke: "#9ca3af", strokeDasharray: "6 3" }, // Grey dashed line
-    //     });
-    //     existingEdgeIds.add(edgeId);
-    //   }
-    // }
   });
 }
 
@@ -3711,6 +3885,13 @@ function MindmapWidget() {
         const currentData = data.kind === "property" ? propertyData : data.kind === "interface" ? interfaceData : directPropertyData;
         const detail = currentData?.byId[targetId];
         hasChildren = !!detail?.hasChildren;
+      } else if (data?.kind === "virtualInterfaceGroup") {
+        // Group header nodes are always collapsible (they always have children)
+        const groupNodeId = data.remId;
+        const next = new Set(collapsedNodes);
+        next.has(groupNodeId) ? next.delete(groupNodeId) : next.add(groupNodeId);
+        setCollapsedNodes(next);
+        return;
       } else if (data?.kind === "virtualProperty" || data?.kind === "virtualInterface" || data?.kind === "virtualDirectProperty") {
         // For virtual attributes, check if the source property has children
         const currentData = data.kind === "virtualProperty" ? propertyData : data.kind === "virtualInterface" ? interfaceData : directPropertyData;
