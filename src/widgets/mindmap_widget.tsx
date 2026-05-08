@@ -1858,8 +1858,10 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         const docFlags = await Promise.all(children.map((child) => child.isDocument()));
         childrenRems = children.filter((_, i) => docFlags[i]);
       } else {
-        const structuralChildren = await getStructuralDescendantChildren(plugin, owner);
-        const extendsChildren = await getExtendsChildren(plugin, owner);
+        const [structuralChildren, extendsChildren] = await Promise.all([
+          getStructuralDescendantChildren(plugin, owner),
+          getExtendsChildren(plugin, owner),
+        ]);
         // Merge structural + extends children, deduplicated by id
         const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
         for (const r of extendsChildren) {
@@ -1871,8 +1873,10 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         childrenRems = Array.from(merged.values());
       }
     } else {
-      const structuralChildren = await getStructuralDescendantChildren(plugin, owner);
-      const extendsChildren = await getExtendsChildren(plugin, owner);
+      const [structuralChildren, extendsChildren] = await Promise.all([
+        getStructuralDescendantChildren(plugin, owner),
+        getExtendsChildren(plugin, owner),
+      ]);
       const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
       for (const r of extendsChildren) {
         if (!merged.has(r._id) && !(hierarchyRemIds?.has(r._id))) {
@@ -2691,6 +2695,7 @@ function layoutVirtualAttributes(
             remId: groupNodeId,
             kind: 'virtualInterfaceGroup',
             sourceRemLabel: group.sourceRemLabel,
+            ownerRemId: ownerNode.id,
           },
           style: groupStyle,
           draggable: true,
@@ -3044,8 +3049,8 @@ function MindmapWidget() {
       const newMap = new Map(prevMap);
       for (const node of graph.nodes) {
         const data = node.data as GraphNodeData;
-        if (data.kind === 'virtualProperty' || data.kind === 'virtualInterface' || data.kind === 'virtualDirectProperty') {
-          // Virtual properties are children of their ownerRemId
+        if (data.kind === 'virtualProperty' || data.kind === 'virtualInterface' || data.kind === 'virtualDirectProperty' || data.kind === 'virtualInterfaceGroup') {
+          // Virtual properties and group nodes are children of their ownerRemId
           if (data.ownerRemId) {
             newMap.set(node.id, data.ownerRemId);
           }
