@@ -17,7 +17,7 @@ import {
 import "reactflow/dist/style.css";
 import { renderWidget, usePlugin, useTrackerPlugin, PluginRem, RNPlugin, RemType, SetRemType } from "@remnote/plugin-sdk";
 
-import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor, getClassProperties, getClassDescriptors, getAncestorLineageStrings } from "../utils/utils";
+import { getRemText, getParentClass, getExtendsChildren, getCleanChildren, getCleanChildrenAll, getExtendsParents, updateDescendantPropertyReferences, updateDescendantInterfaceReferences, hasTag, getTag, isPropertyDescriptor, getClassProperties, getClassDescriptors, getAncestorLineageStrings } from "../utils/utils";
 import { RichTextLabel } from "../utils/richText";
 import { RichTextInterface } from "@remnote/plugin-sdk";
 import { EDGE_TYPES } from "../components/Edges";
@@ -1829,7 +1829,7 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
-async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal): Promise<AttributeData> {
+async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal, hierarchyRemIds?: Set<string>): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
 
@@ -1858,10 +1858,28 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         const docFlags = await Promise.all(children.map((child) => child.isDocument()));
         childrenRems = children.filter((_, i) => docFlags[i]);
       } else {
-        childrenRems = await getStructuralDescendantChildren(plugin, owner);
+        const structuralChildren = await getStructuralDescendantChildren(plugin, owner);
+        const extendsChildren = await getExtendsChildren(plugin, owner);
+        // Merge structural + extends children, deduplicated by id
+        const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
+        for (const r of extendsChildren) {
+          // Exclude hierarchy REMs (class descendants) so they aren't treated as interface attributes
+          if (!merged.has(r._id) && !(hierarchyRemIds?.has(r._id))) {
+            merged.set(r._id, r);
+          }
+        }
+        childrenRems = Array.from(merged.values());
       }
     } else {
-      childrenRems = await getStructuralDescendantChildren(plugin, owner);
+      const structuralChildren = await getStructuralDescendantChildren(plugin, owner);
+      const extendsChildren = await getExtendsChildren(plugin, owner);
+      const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
+      for (const r of extendsChildren) {
+        if (!merged.has(r._id) && !(hierarchyRemIds?.has(r._id))) {
+          merged.set(r._id, r);
+        }
+      }
+      childrenRems = Array.from(merged.values());
     }
     const attrs: AttributeNodeInfo[] = [];
     for (const attr of childrenRems) {
@@ -3100,9 +3118,20 @@ function MindmapWidget() {
           ancestorTreesResult,
           descendantTreesResult
         );
+        // Collect all hierarchy REM ids so extends-children of interface owners that are
+        // class hierarchy nodes are not mistakenly treated as interface attributes.
+        const hierarchyRemIds = new Set<string>([rem._id]);
+        const hierarchyStack: HierarchyNode[] = [...ancestorTreesResult, ...descendantTreesResult];
+        while (hierarchyStack.length > 0) {
+          const hn = hierarchyStack.pop()!;
+          hierarchyRemIds.add(hn.id);
+          if (hn.children && hn.children.length > 0) {
+            hierarchyStack.push(...hn.children);
+          }
+        }
         const [properties, interfacesRaw] = await Promise.all([
           buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal),
-          buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal),
+          buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal, hierarchyRemIds),
         ]);
 
         // Split interfaces into regular interfaces and direct properties (Property-tagged)
