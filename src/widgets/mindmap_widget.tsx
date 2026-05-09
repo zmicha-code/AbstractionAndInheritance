@@ -51,6 +51,7 @@ type GraphNodeData = {
   sourceRemLabel?: string;    // For virtual nodes: the label of the ancestor REM that owns the source property (for hover display)
   isDescriptorProperty?: boolean; // For virtual interfaces: whether the source has the "Interface" tag
   isExported?: boolean;  // Whether this rem has the "Export" tag (for thicker border display)
+  isDepthCutoff?: boolean;  // true if this attribute node had children truncated by MAX_ATTRIBUTE_DEPTH
 };
 
 // Vertical Space Between Different Ancestor or Descendant REM Nodes
@@ -83,6 +84,7 @@ type AttributeNodeInfo = {
   isPrivate: boolean;
   isDescriptorProperty: boolean;
   isExported: boolean;  // Whether this interface has the "Export" tag (for interface filtering)
+  isDepthCutoff?: boolean;  // true if children were truncated by MAX_ATTRIBUTE_DEPTH
 };
 
 type AttributeDetail = Omit<AttributeNodeInfo, 'children'> & {
@@ -108,6 +110,7 @@ type VirtualAttributeInfo = {
   children: VirtualAttributeInfo[];  // Children from the source property (for expandable virtual interfaces)
   isDescriptorProperty: boolean;    // Whether the source attribute has the "Interface" tag
   extendsVirtualIds: string[];   // IDs of parent virtual attrs that this one extends (for same owner REM)
+  isDepthCutoff?: boolean;       // true if children were truncated by MAX_ATTRIBUTE_DEPTH
 };
 
 type VirtualAttributeData = {
@@ -152,6 +155,7 @@ type LoadComputationContext = {
   virtualDataByKind: VirtualDataByKind;
   parentClassCache: Map<string, PluginRem[]>;
   remLookupCache: Map<string, PluginRem | null>;
+  extendsChildrenCache: Map<string, PluginRem[]>;
 };
 
 function createLoadComputationContext(): LoadComputationContext {
@@ -159,6 +163,7 @@ function createLoadComputationContext(): LoadComputationContext {
     virtualDataByKind: {},
     parentClassCache: new Map<string, PluginRem[]>(),
     remLookupCache: new Map<string, PluginRem | null>(),
+    extendsChildrenCache: new Map<string, PluginRem[]>(),
   };
 }
 
@@ -211,6 +216,20 @@ async function getParentClassCached(
   const parents = await getParentClass(plugin, rem);
   context.parentClassCache.set(rem._id, parents);
   return parents;
+}
+
+async function getExtendsChildrenCached(
+  plugin: RNPlugin,
+  rem: PluginRem,
+  context: LoadComputationContext
+): Promise<PluginRem[]> {
+  const cached = context.extendsChildrenCache.get(rem._id);
+  if (cached) {
+    return cached;
+  }
+  const children = await getExtendsChildren(plugin, rem);
+  context.extendsChildrenCache.set(rem._id, children);
+  return children;
 }
 
 async function findRemCached(
@@ -643,12 +662,12 @@ async function buildAncestorNodes(
   const parents = computationContext
     ? await getParentClassCached(plugin, rem, computationContext)
     : await getParentClass(plugin, rem);
-  console.log(`[buildAncestorNodes] Rem: "${remName}" (${rem._id}), parents:`, parents.map(p => p._id));
+  //console.log(`[buildAncestorNodes] Rem: "${remName}" (${rem._id}), parents:`, parents.map(p => p._id));
   const uniqueParents = new Map<string, PluginRem>();
   for (const parent of parents) {
     const parentName = parent ? await getRemText(plugin, parent) : "(null)";
     const skip = !parent || parent._id === rem._id || visited.has(parent._id);
-    console.log(`[buildAncestorNodes]   Checking parent "${parentName}" (${parent?._id}): skip=${skip}, self=${parent?._id === rem._id}, visited=${visited.has(parent?._id ?? "")}`);
+    //console.log(`[buildAncestorNodes]   Checking parent "${parentName}" (${parent?._id}): skip=${skip}, self=${parent?._id === rem._id}, visited=${visited.has(parent?._id ?? "")}`);
     if (skip) continue;
     uniqueParents.set(parent._id, parent);
   }
@@ -666,7 +685,7 @@ async function buildAncestorNodes(
       buildAncestorNodes(plugin, parent, visited, computationContext, signal),
       hasTag(plugin, parent, "Export"),
     ]);
-    console.log(`[buildAncestorNodes]   Added parent "${name}" with ${ancestors.length} ancestors`);
+    //console.log(`[buildAncestorNodes]   Added parent "${name}" with ${ancestors.length} ancestors`);
     result.push({
       id: parent._id,
       name: name || "(Untitled Rem)",
@@ -821,9 +840,9 @@ function layoutSubtreeHorizontal(
   virtualAttributeData?: VirtualAttributeData,
   hiddenVirtualAttributes?: Set<string>
 ): GraphNode | null {
-  console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" (${node.id}), orientation=${orientation}, relation=${relation}, existingNodeIds.has=${existingNodeIds.has(node.id)}`);
+  //console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" (${node.id}), orientation=${orientation}, relation=${relation}, existingNodeIds.has=${existingNodeIds.has(node.id)}`);
   if (existingNodeIds.has(node.id)) {
-    console.log(`[layoutSubtreeHorizontal]   SKIPPED - already exists`);
+    //console.log(`[layoutSubtreeHorizontal]   SKIPPED - already exists`);
     return nodes.find((n) => n.id === node.id) ?? null;
   }
 
@@ -900,13 +919,13 @@ function layoutSubtreeHorizontal(
     });
   }
 
-  console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" checking children: collapsed=${collapsed.has(node.id)}, children.length=${node.children?.length}`);
+  //console.log(`[layoutSubtreeHorizontal] Node: "${node.name}" checking children: collapsed=${collapsed.has(node.id)}, children.length=${node.children?.length}`);
   if (collapsed.has(node.id) || !node.children?.length) {
-    console.log(`[layoutSubtreeHorizontal]   NOT recursing into children`);
+    //console.log(`[layoutSubtreeHorizontal]   NOT recursing into children`);
     return graphNode;
   }
 
-  console.log(`[layoutSubtreeHorizontal]   Recursing into ${node.children.length} children`);
+  //console.log(`[layoutSubtreeHorizontal]   Recursing into ${node.children.length} children`);
   layoutChildrenHorizontal(
     node.children,
     graphNode,
@@ -1183,11 +1202,12 @@ function layoutAttributeTree(
       posY = storedPos.y;
     }
     const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false);
+    const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
     nodes.push({
       id: nodeId,
       position: { x: posX, y: posY },
-      data: { label: info.label, richText: info.richText, remId: info.id, kind },
-      style: nodeStyle,
+      data: { label: info.label, richText: info.richText, remId: info.id, kind, isDepthCutoff: info.isDepthCutoff },
+      style: finalStyle,
       draggable: true,
       selectable: true,
       type: `${kind}Node`,
@@ -1267,6 +1287,7 @@ function layoutAttributeDescendants(
     }
 
     const nodeStyle = getNodeStyle(kind, collapsed.has(info.id), false);
+    const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -1274,6 +1295,7 @@ function layoutAttributeDescendants(
       label: info.label,
       remId: info.id,
       kind,
+      isDepthCutoff: info.isDepthCutoff,
     };
 
     if (!childNode) {
@@ -1281,7 +1303,7 @@ function layoutAttributeDescendants(
         id: nodeId,
         position: { x: posX, y: posY },
         data: updatedData,
-        style: nodeStyle,
+        style: finalStyle,
         draggable: true,
         selectable: true,
         type: `${kind}Node`,
@@ -1295,14 +1317,14 @@ function layoutAttributeDescendants(
           ...childNode,
           position: { x: posX, y: posY },
           data: updatedData,
-          style: nodeStyle,
+          style: finalStyle,
         };
         nodes[childNodeIndex] = childNode;
       } else {
         childNode = {
           ...childNode,
           data: updatedData,
-          style: nodeStyle,
+          style: finalStyle,
         };
         nodes[childNodeIndex] = childNode;
       }
@@ -1829,19 +1851,28 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
-async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal, hierarchyRemIds?: Set<string>): Promise<AttributeData> {
+async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal, hierarchyRemIds?: Set<string>, context?: LoadComputationContext): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
+
+  const MAX_ATTRIBUTE_DEPTH = 3;
 
   async function collectAttributes(
     owner: PluginRem,
     ownerNodeId: string,
     isSubAttribute: boolean = false,
     parentId?: string,
-    parentHierarchyLevel: number = -1
+    parentHierarchyLevel: number = -1,
+    depth: number = 0
   ): Promise<AttributeNodeInfo[]> {
     // Check timeout before processing
     if (signal && isTimedOut(signal)) {
+      return [];
+    }
+    // Depth limit: stop recursing beyond MAX_ATTRIBUTE_DEPTH
+    if (depth >= MAX_ATTRIBUTE_DEPTH) {
+      const ownerLabel = await getRemText(plugin, owner).catch(() => owner._id);
+      console.log(`[depth-limit] depth=${depth}/${MAX_ATTRIBUTE_DEPTH} rem=${owner._id} ("${ownerLabel}") parent=${parentId ?? "none"}`);
       return [];
     }
     
@@ -1860,7 +1891,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       } else {
         const [structuralChildren, extendsChildren] = await Promise.all([
           getStructuralDescendantChildren(plugin, owner),
-          getExtendsChildren(plugin, owner),
+          context ? getExtendsChildrenCached(plugin, owner, context) : getExtendsChildren(plugin, owner),
         ]);
         // Merge structural + extends children, deduplicated by id
         const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
@@ -1875,7 +1906,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     } else {
       const [structuralChildren, extendsChildren] = await Promise.all([
         getStructuralDescendantChildren(plugin, owner),
-        getExtendsChildren(plugin, owner),
+        context ? getExtendsChildrenCached(plugin, owner, context) : getExtendsChildren(plugin, owner),
       ]);
       const merged = new Map<string, PluginRem>(structuralChildren.map((r) => [r._id, r]));
       for (const r of extendsChildren) {
@@ -1885,44 +1916,59 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       }
       childrenRems = Array.from(merged.values());
     }
-    const attrs: AttributeNodeInfo[] = [];
-    for (const attr of childrenRems) {
-      // Check timeout in the loop
-      if (signal && isTimedOut(signal)) {
-        break;
-      }
-      
-      if (skipTopLevelForId && attr._id === skipTopLevelForId) continue;
-      if (await attr.getType() === RemType.PORTAL) continue;
-      const labelRaw = await getRemText(plugin, attr);
-      const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
-      let extendsIds: string[] = [];
-      try {
-        const parentRems = await getExtendsParents(plugin, attr);
-        extendsIds = [...new Set(parentRems.map((p) => p._id))];
-      } catch {}
-      const isPrivate = await hasTag(plugin, attr, "Private");
-      const isDescriptorProperty = await isPropertyDescriptor(plugin, attr);
+    // Stage 1: check timeout before firing parallel fetches
+    if (signal && isTimedOut(signal)) {
+      return [];
+    }
+
+    // Stage 1: fetch all per-attribute metadata in parallel (6 calls per attr, all independent)
+    const metaResults = await Promise.all(
+      childrenRems.map(async (attr) => {
+        const [type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag] = await Promise.all([
+          attr.getType(),
+          getRemText(plugin, attr),
+          getExtendsParents(plugin, attr).catch(() => [] as PluginRem[]),
+          hasTag(plugin, attr, "Private"),
+          isPropertyDescriptor(plugin, attr),
+          hasTag(plugin, attr, "Export"),
+        ]);
+        return { attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag };
+      })
+    );
+
+    // Stage 2: synchronous filter — apply the same skip conditions as before (no awaits needed)
+    const filteredMeta = metaResults.filter(({ attr, type, isDescriptorProperty, hasExportTag }) => {
+      if (skipTopLevelForId && attr._id === skipTopLevelForId) return false;
+      if (type === RemType.PORTAL) return false;
       // Properties (documents) and direct properties (descriptors) are always exported
       // Regular interfaces require the Export tag
-      const isExported = topLevelIsDocument || isDescriptorProperty || await hasTag(plugin, attr, "Export");
-      // Skip non-exported sub-attributes entirely (children of interfaces)
-      // Top-level interfaces are kept for byId tracking, but their non-exported children are not collected
-      if (isSubAttribute && !topLevelIsDocument && !isExported) continue;
-      const hierarchyLevel = isSubAttribute ? parentHierarchyLevel : -1;
-      // Property descriptors should not have any children (they are terminal)
-      const skipChildren = isDescriptorProperty;
-      const subChildren = skipChildren
-        ? []
-        : await collectAttributes(
-            attr,
-            attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id),
-            true,
-            attr._id,
-            hierarchyLevel
-          );
-      attrs.push({ id: attr._id, label, richText: attr.text, hierarchyLevel, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty: isDescriptorProperty, isExported });
-    }
+      const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
+      // Skip non-exported sub-attributes (children of interfaces)
+      if (isSubAttribute && !topLevelIsDocument && !isExported) return false;
+      return true;
+    });
+
+    // Stage 3: recurse for sub-children in parallel, then assemble results
+    const attrs: AttributeNodeInfo[] = await Promise.all(
+      filteredMeta.map(async ({ attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag }) => {
+        const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
+        const extendsIds = [...new Set(parentRems.map((p) => p._id))];
+        const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
+        const hierarchyLevel = isSubAttribute ? parentHierarchyLevel : -1;
+        // Property descriptors should not have any children (they are terminal)
+        const subChildren = isDescriptorProperty
+          ? []
+          : await collectAttributes(
+              attr,
+              attributeNodeId(topLevelIsDocument ? 'property' : 'interface', attr._id),
+              true,
+              attr._id,
+              hierarchyLevel,
+              depth + 1
+            );
+        return { id: attr._id, label, richText: attr.text, hierarchyLevel, extends: extendsIds, children: subChildren, isPrivate, isDescriptorProperty, isExported, isDepthCutoff: !isDescriptorProperty && depth + 1 >= MAX_ATTRIBUTE_DEPTH } as AttributeNodeInfo;
+      })
+    );
     attrs.sort(compareByHierarchyThenLabel);
     attrs.forEach((p) => {
       const detail = {
@@ -1936,6 +1982,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
         isPrivate: p.isPrivate,
         isDescriptorProperty: p.isDescriptorProperty,
         isExported: p.isExported,
+        isDepthCutoff: p.isDepthCutoff,
       };
       if (!byId[p.id]) {
         byId[p.id] = detail;
@@ -1945,19 +1992,19 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
   }
 
   const uniqueRems = [...new Map(rems.map((r) => [r._id, r])).values()];
-  for (const rem of uniqueRems) {
-    // Check timeout before processing each rem
-    if (signal && isTimedOut(signal)) {
-      break;
-    }
-    
-    if (await rem.getType() === RemType.PORTAL) {
-      continue;
-    }
+  await mapWithConcurrency(uniqueRems, 4, async (rem) => {
+    if (signal && isTimedOut(signal)) return;
+    if (await rem.getType() === RemType.PORTAL) return;
+    const tRem = performance.now();
     const attrs = await collectAttributes(rem, rem._id);
+    const elapsed = performance.now() - tRem;
+    if (elapsed > 300) {
+      console.warn(`[perf] slow collectAttributes rem=${rem._id}: ${elapsed.toFixed(0)}ms (${attrs.length} attrs)`);
+    }
     if (attrs.length > 0) byOwner[rem._id] = attrs;
-  }
+  }, signal);
 
+  console.log(`[perf] buildAttributeData done: uniqueRems=${uniqueRems.length} ownersWithAttrs=${Object.keys(byOwner).length} uniqueAttrIds=${Object.keys(byId).length} maxDepth=${MAX_ATTRIBUTE_DEPTH}`);
   return { byOwner, byId };
 }
 
@@ -2120,6 +2167,7 @@ function buildVirtualAttributeData(
       children: buildVirtualChildren(child.children, ownerRemId, sourceRemId, sourceRemLabel, parentHierarchyLevel),
       extendsVirtualIds: [],  // Virtual children don't track extends for now
       isDescriptorProperty: child.isDescriptorProperty,
+      isDepthCutoff: child.isDepthCutoff,
     }));
   };
 
@@ -2429,6 +2477,7 @@ function buildVirtualAttributeData(
                 : buildVirtualChildren(prop.children, remId, ancestorId, sourceRemLabel, hierarchyLevel),
               isDescriptorProperty: prop.isDescriptorProperty,
               extendsVirtualIds: [],  // Will be computed in second pass
+              isDepthCutoff: prop.isDepthCutoff,
             });
           }
         }
@@ -2526,6 +2575,7 @@ function layoutVirtualAttributeDescendants(
     }
 
     const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isDescriptorProperty);
+    const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
 
     let childNodeIndex = nodes.findIndex((n) => n.id === nodeId);
     let childNode = childNodeIndex >= 0 ? nodes[childNodeIndex] : null;
@@ -2537,6 +2587,7 @@ function layoutVirtualAttributeDescendants(
       ownerRemId: info.ownerRemId,
       sourceRemLabel: info.sourceRemLabel,
       isDescriptorProperty: info.isDescriptorProperty,
+      isDepthCutoff: info.isDepthCutoff,
     };
 
     if (!childNode) {
@@ -2544,7 +2595,7 @@ function layoutVirtualAttributeDescendants(
         id: nodeId,
         position: { x: posX, y: posY },
         data: updatedData,
-        style: nodeStyle,
+        style: finalStyle,
         draggable: true,
         selectable: true,
         type: `${virtualKind}Node`,
@@ -2558,14 +2609,14 @@ function layoutVirtualAttributeDescendants(
           ...childNode,
           position: { x: posX, y: posY },
           data: updatedData,
-          style: nodeStyle,
+          style: finalStyle,
         };
         nodes[childNodeIndex] = childNode;
       } else {
         childNode = {
           ...childNode,
           data: updatedData,
-          style: nodeStyle,
+          style: finalStyle,
         };
         nodes[childNodeIndex] = childNode;
       }
@@ -2749,6 +2800,7 @@ function layoutVirtualAttributes(
           const hasChildren = info.children && info.children.length > 0;
           const isCollapsedItem = collapsed.has(info.id);
           const nodeStyle = getNodeStyle('virtualInterface', hasChildren && isCollapsedItem, false, undefined, info.isDescriptorProperty);
+          const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
 
           nodes.push({
             id: nodeId,
@@ -2762,8 +2814,9 @@ function layoutVirtualAttributes(
               ownerRemId: info.ownerRemId,
               sourceRemLabel: info.sourceRemLabel,
               isDescriptorProperty: info.isDescriptorProperty,
+              isDepthCutoff: info.isDepthCutoff,
             },
-            style: nodeStyle,
+            style: finalStyle,
             draggable: true,
             selectable: true,
             type: 'virtualInterfaceNode',
@@ -2832,6 +2885,7 @@ function layoutVirtualAttributes(
     }
 
     const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isDescriptorProperty);
+    const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
 
     nodes.push({
       id: nodeId,
@@ -2845,8 +2899,9 @@ function layoutVirtualAttributes(
         ownerRemId: info.ownerRemId,
         sourceRemLabel: info.sourceRemLabel,
         isDescriptorProperty: info.isDescriptorProperty,
+        isDepthCutoff: info.isDepthCutoff,
       },
-      style: nodeStyle,
+      style: finalStyle,
       draggable: true,
       selectable: true,
       type: `${virtualKind}Node`,
@@ -3106,15 +3161,19 @@ function MindmapWidget() {
           return;
         }
 
+        const tLoad = performance.now();
+
         // 1.1 Collect Ancestors and Descendants
         // Use separate visited sets to avoid race conditions between parallel builds
         const visitedAncestors = new Set<string>([rem._id]);
         const visitedDescendants = new Set<string>([rem._id]);
+        const t0 = performance.now();
         const [name, ancestorTreesResult, descendantTreesResult] = await Promise.all([
           getRemText(plugin, rem),
           buildAncestorNodes(plugin, rem, visitedAncestors, loadComputationContextRef.current, timeoutSignal),
           ancestorsOnly ? Promise.resolve([]) : buildDescendantNodes(plugin, rem, visitedDescendants, timeoutSignal),
         ]);
+        console.log(`[perf] phase 1 buildAncestors+buildDescendants: ${(performance.now() - t0).toFixed(0)}ms | ancestors=${ancestorTreesResult.length} descendants=${descendantTreesResult.length}`);
 
         // 1.2 Collect Properties
         const centerLabel = name || "(Untitled Rem)";
@@ -3123,6 +3182,7 @@ function MindmapWidget() {
           ancestorTreesResult,
           descendantTreesResult
         );
+
         // Collect all hierarchy REM ids so extends-children of interface owners that are
         // class hierarchy nodes are not mistakenly treated as interface attributes.
         const hierarchyRemIds = new Set<string>([rem._id]);
@@ -3134,10 +3194,14 @@ function MindmapWidget() {
             hierarchyStack.push(...hn.children);
           }
         }
-        const [properties, interfacesRaw] = await Promise.all([
-          buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal),
-          buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal, hierarchyRemIds),
-        ]);
+        const t1 = performance.now();
+        // Run sequentially so the second call benefits from extendsChildrenCache populated by the first
+        const properties = await buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal, undefined, loadComputationContextRef.current);
+        const t1b = performance.now();
+        console.log(`[perf] phase 2a buildAttributeData (properties): ${(t1b - t1).toFixed(0)}ms | propOwners=${Object.keys(properties.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
+        const interfacesRaw = await buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal, hierarchyRemIds, loadComputationContextRef.current);
+        console.log(`[perf] phase 2b buildAttributeData (interfaces): ${(performance.now() - t1b).toFixed(0)}ms | ifaceOwners=${Object.keys(interfacesRaw.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
+        console.log(`[perf] phase 2 buildAttributeData total: ${(performance.now() - t1).toFixed(0)}ms | rems=${remsForAttributes.length}`);
 
         // Split interfaces into regular interfaces and direct properties (Property-tagged)
         const { regularInterfaces: interfacesUnfiltered, directProperties } = splitInterfaceData(interfacesRaw);
@@ -3163,6 +3227,7 @@ function MindmapWidget() {
         }
 
         // 1.4 Build complete parent map once per load for virtual computations and edge completion
+        const t2 = performance.now();
         const childToParentsMap = await buildCompleteChildToParentsMap(
           plugin,
           rem._id,
@@ -3171,6 +3236,7 @@ function MindmapWidget() {
           loadComputationContextRef.current,
           timeoutSignal
         );
+        console.log(`[perf] phase 3 buildCompleteChildToParentsMap: ${(performance.now() - t2).toFixed(0)}ms | entries=${Object.keys(childToParentsMap).length}`);
 
         // Helper to recursively collect virtual IDs with children
         const collectVirtualWithChildren = (attrs: VirtualAttributeInfo[]): string[] => {
@@ -3184,6 +3250,7 @@ function MindmapWidget() {
           return ids;
         };
 
+        const t3 = performance.now();
         // Build virtual property data and collapse those with children
         const virtualPropertyData = buildVirtualAttributeData(
           properties,
@@ -3240,6 +3307,7 @@ function MindmapWidget() {
             collapsed.add(id);
           }
         }
+        console.log(`[perf] phase 4 buildVirtualAttributeData x3: ${(performance.now() - t3).toFixed(0)}ms`);
 
         const hidden = new Set<string>();
 
@@ -3292,6 +3360,7 @@ function MindmapWidget() {
         const primaryKind: 'property' | 'interface' | 'directProperty' = attributeType === 'property' ? 'property' : 'interface';
         const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = attributeType === 'property' ? 'directProperty' : undefined;
         
+        const t4 = performance.now();
         const graph = await createGraphData(
           plugin,
           rem._id,
@@ -3310,6 +3379,8 @@ function MindmapWidget() {
           loadComputationContextRef.current,
           timeoutSignal
         );
+        console.log(`[perf] phase 5 createGraphData: ${(performance.now() - t4).toFixed(0)}ms | nodes=${graph.nodes.length} edges=${graph.edges.length}`);
+        const t5 = performance.now();
         const updatedEdges = await addMissingRemEdges(
           plugin,
           graph.nodes,
@@ -3317,7 +3388,10 @@ function MindmapWidget() {
           loadComputationContextRef.current.childToParentsMap,
           loadComputationContextRef.current
         );
+        console.log(`[perf] phase 6 addMissingRemEdges: ${(performance.now() - t5).toFixed(0)}ms | edges=${updatedEdges.length}`);
         
+        console.log(`[perf] TOTAL loadHierarchy: ${(performance.now() - tLoad).toFixed(0)}ms | rem="${centerLabel}" rems=${remsForAttributes.length}`);
+
         // Check if timeout occurred and set partial load flag
         if (timeoutSignal.timedOut) {
           setIsPartialLoad(true);

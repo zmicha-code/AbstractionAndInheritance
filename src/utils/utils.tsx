@@ -1064,15 +1064,15 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
 
   const remName = await getRemText(plugin, rem);
   const directParentName = filteredDirectParent ? await getRemText(plugin, filteredDirectParent) : "(null)";
-  console.log(`[getParentClass] Rem: "${remName}" (${rem._id}), isDocument=${isDocument}, directParent="${directParentName}" (${filteredDirectParent?._id}), extendsParents=${filteredExtendsParents.length}`);
+  //console.log(`[getParentClass] Rem: "${remName}" (${rem._id}), isDocument=${isDocument}, directParent="${directParentName}" (${filteredDirectParent?._id}), extendsParents=${filteredExtendsParents.length}`);
 
   // Property (document): inherits via extends, otherwise defines a new type
   if (isDocument) {
     if (filteredExtendsParents.length > 0) {
-      console.log(`[getParentClass]   Document with extends, returning extendsParents`);
+      //console.log(`[getParentClass]   Document with extends, returning extendsParents`);
       return filteredExtendsParents;
     }
-    console.log(`[getParentClass]   Document without extends, returning [self]`);
+    //console.log(`[getParentClass]   Document without extends, returning [self]`);
     return [rem];
   }
 
@@ -1080,7 +1080,7 @@ export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]>
   const result: Rem[] = [];
   if (filteredDirectParent) result.push(filteredDirectParent);
   for (const p of filteredExtendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
-  console.log(`[getParentClass]   Non-document, returning ${result.length} parents`);
+  //console.log(`[getParentClass]   Non-document, returning ${result.length} parents`);
   return result.length > 0 ? result : [rem];
 }
 
@@ -2350,7 +2350,7 @@ export async function collectLayerItems(plugin: RNPlugin, item: Rem, targetBaseT
   } else {
     const a = await getEncapsulatingClass(plugin, item);
 
-    console.log("Not Adding: " + await getRemText(plugin, item) + "(" + await getFullPath(plugin, item) + ")" + (!(await isAncestor(plugin, a, rem)) ? await getRemText(plugin, a) + "(" + await getFullPath(plugin, a) + ") not an ancestor" : "IDK"));
+    //console.log("Not Adding: " + await getRemText(plugin, item) + "(" + await getFullPath(plugin, item) + ")" + (!(await isAncestor(plugin, a, rem)) ? await getRemText(plugin, a) + "(" + await getFullPath(plugin, a) + ") not an ancestor" : "IDK"));
   }
 
   return result;
@@ -2366,7 +2366,7 @@ export async function getLayers(plugin: RNPlugin, rem: Rem, interfaceLayers = tr
   if(interfaceLayers) {
     result = await collectLayerItems(plugin, initialBaseType, initialBaseType, rem, !interfaceLayers, seenItems);
   } else {
-    console.log(await getAncestorLineageString(plugin, rem));
+    //console.log(await getAncestorLineageString(plugin, rem));
 
     const lineages = await getAncestorLineage(plugin, rem);
   
@@ -2381,26 +2381,26 @@ export async function getLayers(plugin: RNPlugin, rem: Rem, interfaceLayers = tr
 
     ancestors = filterDuplicates(ancestors);
 
-    for(const a of ancestors) console.log("Ancestor: " + await getRemText(plugin, a) + "(" + await getFullPath(plugin, a) + ") " + a._id);
+    //for(const a of ancestors) console.log("Ancestor: " + await getRemText(plugin, a) + "(" + await getFullPath(plugin, a) + ") " + a._id);
 
     const childrenArrays = await Promise.all(ancestors.map(ancestor => getCleanChildrenAll(plugin, ancestor)));
 
     let allChildren = childrenArrays.flat();
 
-    for(const b of allChildren) console.log("Ancestor Child: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")")
+    //for(const b of allChildren) console.log("Ancestor Child: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")")
     
     let baseTypes = await Promise.all(allChildren.map(child => getBaseType(plugin, child))); // getBaseTypeEx(plugin, child, rem)
 
     baseTypes = filterDuplicates(baseTypes);
 
-    for(const b of baseTypes) console.log("Layer Base Type: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")")
+    //for(const b of baseTypes) console.log("Layer Base Type: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")")
 
     for (const b of baseTypes) {
       if (seenItems.has(b._id) || b._id == initialBaseType._id) continue;
 
       seenItems.add(b._id);
 
-      console.log("Get Layer: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")");
+      //console.log("Get Layer: " + await getRemText(plugin, b) + "(" + await getFullPath(plugin, b) + ")");
       
       //const layerItems = await collectLayerItems(plugin, b, b, rem, !interfaceLayers, seenItems);
       const layerItems = await collectLayerItems(plugin, await getBaseTypeEx(plugin, b, rem), b, rem, !interfaceLayers, seenItems);
@@ -2495,7 +2495,7 @@ export async function collectLayerItems2(plugin: RNPlugin, ancestor: Rem, rem: R
   let nextAncestors = Array.from(nextAncestorSet);
 
   for(const a of nextAncestors){
-    console.log("Next Ancestor ( " + await getRemText(plugin, rem) + "): " + await getRemText(plugin, a) + " (" + await getFullPath(plugin, a) + ")");
+    //console.log("Next Ancestor ( " + await getRemText(plugin, rem) + "): " + await getRemText(plugin, a) + " (" + await getFullPath(plugin, a) + ")");
     result = [...result, ...await collectLayerItems2(plugin, a, rem, sameType, seenItems)];
   }
 
@@ -2523,7 +2523,7 @@ export async function getLayers2(plugin: RNPlugin, rem: Rem, interfaceLayers = t
     seenItems.add(rem._id);
 
     for(const a of nextAncestors){
-      console.log("Next Ancestor ( " + await getRemText(plugin, rem) + "): " + await getRemText(plugin, a) + " (" + await getFullPath(plugin, a) + ")");
+      //console.log("Next Ancestor ( " + await getRemText(plugin, rem) + "): " + await getRemText(plugin, a) + " (" + await getFullPath(plugin, a) + ")");
 
       result = [...result, ...await collectLayerItems2(plugin, a, rem, false, seenItems)];
     }
