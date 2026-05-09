@@ -4152,6 +4152,15 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [contextMenu, plugin, handleContextMenuClose]);
 
+  const handleEditVirtualRem = useCallback(async () => {
+    if (!virtualContextMenu?.sourcePropertyId) return;
+    const rem = (await plugin.rem.findOne(virtualContextMenu.sourcePropertyId)) as PluginRem | null;
+    if (rem) {
+      void plugin.window.openRem(rem);
+    }
+    handleContextMenuClose();
+  }, [virtualContextMenu, plugin, handleContextMenuClose]);
+
   const handleImplementVirtualProperty = useCallback(async () => {
     if (!virtualContextMenu) return;
     
@@ -5020,6 +5029,22 @@ function MindmapWidget() {
               onClick={handleImplementVirtualProperty}
             >
               Implement
+            </button>
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+                borderTop: '1px solid #e2e8f0',
+              }}
+              onClick={handleEditVirtualRem}
+            >
+              Edit Rem
             </button>
           </div>
         )}
