@@ -2124,11 +2124,24 @@ function buildVirtualAttributeData(
     const visited = new Set<string>();
     while (true) {
       visited.add(current);
+      // First try the property extends chain
       const parents = propertyExtendsMap[current];
-      if (!parents || parents.length === 0) return current;
-      const next = parents[0];
-      if (visited.has(next)) return current; // cycle guard
-      current = next;
+      if (parents && parents.length > 0) {
+        const next = parents[0];
+        if (!visited.has(next)) {
+          current = next;
+          continue;
+        }
+      }
+      // If no extends parent (or cycle), also try structural nesting (parentId from sub-attribute hierarchy)
+      // e.g. "chemische umwandlungen" is a REM child of "umwandlungen" but doesn't extend it
+      const structParent = attributeData.byId[current]?.parentId;
+      if (structParent && !visited.has(structParent) && attributeData.byId[structParent]) {
+        current = structParent;
+        continue;
+      }
+      // No more parents — this is the root
+      return current;
     }
   };
   
