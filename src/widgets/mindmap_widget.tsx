@@ -2895,7 +2895,8 @@ function layoutVirtualAttributes(
         });
       }
 
-      slotOffset += groupSize;
+      // When collapsed, only the header node occupies a slot (not all its children)
+      slotOffset += isGroupCollapsed ? 1 : groupSize;
     }
 
     return;
@@ -3064,7 +3065,8 @@ function layoutVirtualAttributes(
       });
     }
 
-    slotOffset += groupSize;
+    // When collapsed, only the header node occupies a slot (not all its children)
+    slotOffset += isGroupCollapsed ? 1 : groupSize;
   }
 }
 
