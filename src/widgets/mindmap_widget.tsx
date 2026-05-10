@@ -2760,6 +2760,39 @@ function layoutVirtualAttributes(
       const sortedItems = [...group.items].sort(compareByHierarchyThenLabel);
       const groupSize = sortedItems.length;
 
+      // Single item: skip group header, connect directly to owner
+      if (groupSize === 1) {
+        const info = sortedItems[0];
+        const nodeId = info.id;
+        if (!existingNodeIds.has(nodeId)) {
+          let posX = ownerNode.position.x + 150;
+          let posY = baseY + slotOffset * ATTRIBUTE_VERTICAL_SPACING;
+          const storedPos = nodePositions?.get(nodeId);
+          if (storedPos) { posX = storedPos.x; posY = storedPos.y; }
+          const hasChildren = info.children && info.children.length > 0;
+          const isCollapsedItem = collapsed.has(info.id);
+          const nodeStyle = getNodeStyle('virtualInterface', hasChildren && isCollapsedItem, false, undefined, info.isDescriptorProperty);
+          const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
+          nodes.push({
+            id: nodeId, position: { x: posX, y: posY },
+            data: { label: info.label, richText: info.richText, remId: info.id, kind: 'virtualInterface' as const, sourcePropertyId: info.sourcePropertyId, ownerRemId: info.ownerRemId, sourceRemLabel: info.sourceRemLabel, isDescriptorProperty: info.isDescriptorProperty, isDepthCutoff: info.isDepthCutoff },
+            style: finalStyle, draggable: true, selectable: true, type: 'virtualInterfaceNode',
+          });
+          existingNodeIds.add(nodeId);
+          const virtualNode = nodes[nodes.length - 1];
+          const directEdgeId = `vattr-link:${ownerNode.id}->${nodeId}`;
+          if (!existingEdgeIds.has(directEdgeId)) {
+            edges.push({ id: directEdgeId, source: ownerNode.id, target: nodeId, sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE, targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE, type: "randomOffset", markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 }, style: { stroke: "#9ca3af", strokeDasharray: "4 2" } });
+            existingEdgeIds.add(directEdgeId);
+          }
+          if (hasChildren && !isCollapsedItem) {
+            layoutVirtualAttributeDescendants(virtualNode, info.children, nodes, edges, existingNodeIds, existingEdgeIds, kind, collapsed, nodePositions);
+          }
+        }
+        slotOffset += 1;
+        continue;
+      }
+
       // The group header is vertically centered over its children
       const groupCenterSlot = slotOffset + (groupSize - 1) / 2;
       let groupX = ownerNode.position.x + 150;
@@ -2932,6 +2965,39 @@ function layoutVirtualAttributes(
     const groupNodeId = `vpropgroup:${ownerNode.id}:${baseTypeId}`;
     const sortedItems = [...group.items].sort(compareByHierarchyThenLabel);
     const groupSize = sortedItems.length;
+
+    // Single item: skip group header, connect directly to owner
+    if (groupSize === 1) {
+      const info = sortedItems[0];
+      const nodeId = info.id;
+      if (!existingNodeIds.has(nodeId)) {
+        let posX = ownerNode.position.x + 150;
+        let posY = baseY + slotOffset * ATTRIBUTE_VERTICAL_SPACING;
+        const storedPos = nodePositions?.get(nodeId);
+        if (storedPos) { posX = storedPos.x; posY = storedPos.y; }
+        const hasChildren = info.children && info.children.length > 0;
+        const isCollapsedItem = collapsed.has(info.id);
+        const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsedItem, false, undefined, info.isDescriptorProperty);
+        const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
+        nodes.push({
+          id: nodeId, position: { x: posX, y: posY },
+          data: { label: info.label, richText: info.richText, remId: info.id, kind: virtualKind as GraphNodeData['kind'], sourcePropertyId: info.sourcePropertyId, ownerRemId: info.ownerRemId, sourceRemLabel: info.sourceRemLabel, isDescriptorProperty: info.isDescriptorProperty, isDepthCutoff: info.isDepthCutoff },
+          style: finalStyle, draggable: true, selectable: true, type: `${virtualKind}Node`,
+        });
+        existingNodeIds.add(nodeId);
+        const virtualNode = nodes[nodes.length - 1];
+        const directEdgeId = `vattr-link:${ownerNode.id}->${nodeId}`;
+        if (!existingEdgeIds.has(directEdgeId)) {
+          edges.push({ id: directEdgeId, source: ownerNode.id, target: nodeId, sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE, targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE, type: "randomOffset", markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 }, style: { stroke: "#9ca3af", strokeDasharray: "4 2" } });
+          existingEdgeIds.add(directEdgeId);
+        }
+        if (hasChildren && !isCollapsedItem) {
+          layoutVirtualAttributeDescendants(virtualNode, info.children, nodes, edges, existingNodeIds, existingEdgeIds, kind, collapsed, nodePositions);
+        }
+      }
+      slotOffset += 1;
+      continue;
+    }
 
     const groupCenterSlot = slotOffset + (groupSize - 1) / 2;
     let groupX = ownerNode.position.x + 150;
