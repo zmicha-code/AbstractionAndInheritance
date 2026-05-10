@@ -111,6 +111,8 @@ type VirtualAttributeInfo = {
   isDescriptorProperty: boolean;    // Whether the source attribute has the "Interface" tag
   extendsVirtualIds: string[];   // IDs of parent virtual attrs that this one extends (for same owner REM)
   isDepthCutoff?: boolean;       // true if children were truncated by MAX_ATTRIBUTE_DEPTH
+  baseTypeId?: string;           // Ultimate root ancestor ID of sourceRemId (for grouping virtual properties)
+  baseTypeLabel?: string;        // Label of the ultimate root ancestor
 };
 
 type VirtualAttributeData = {
@@ -1433,8 +1435,8 @@ async function integrateAttributeGraph(
     let count = 0;
     for (const node of nodes) {
       const data = node.data as GraphNodeData;
-      // Skip non-attribute nodes
-      if (data.kind === 'rem') continue;
+      // Skip non-attribute nodes and group header nodes (they don't occupy vertical slots)
+      if (data.kind === 'rem' || data.kind === 'virtualInterfaceGroup') continue;
       // For virtual nodes, check ownerRemId
       if (data.ownerRemId === ownerId) {
         count++;
@@ -2105,12 +2107,30 @@ function buildVirtualAttributeData(
   buildAncestorNameMap(ancestors);
   buildAncestorNameMap(descendants);
 
+  // Helper to compute the ultimate root property ancestor by walking the property extends chain.
+  // Must be placed after propertyExtendsMap is built — moved below.
+
   // First, build a map of property extends relationships for quick lookup
   // (moved up so we can use it in collectImplementedIds for transitive lookup)
   const propertyExtendsMap: Record<string, string[]> = {};
   for (const detail of Object.values(attributeData.byId)) {
     propertyExtendsMap[detail.id] = detail.extends;
   }
+
+  // Walks propertyExtendsMap upward until a property with no parents is found.
+  // O(depth of property hierarchy), no async calls.
+  const computeRootProperty = (propId: string): string => {
+    let current = propId;
+    const visited = new Set<string>();
+    while (true) {
+      visited.add(current);
+      const parents = propertyExtendsMap[current];
+      if (!parents || parents.length === 0) return current;
+      const next = parents[0];
+      if (visited.has(next)) return current; // cycle guard
+      current = next;
+    }
+  };
   
   // Helper to get all ancestors of a property (transitive)
   const getPropertyAncestors = (propId: string): Set<string> => {
@@ -2462,6 +2482,8 @@ function buildVirtualAttributeData(
           if (!existingVirtual) {
             const sourceRemLabel = ancestorIdToName[ancestorId] || ancestorId;
             const hierarchyLevel = getHierarchyLevel(remId, ancestorId);
+            const baseTypeId = computeRootProperty(prop.id);
+            const baseTypeLabel = attributeData.byId[baseTypeId]?.label ?? prop.label;
             candidateVirtualAttrs.push({
               id: `virtual:${remId}:${prop.id}`,
               label: prop.label,
@@ -2478,6 +2500,8 @@ function buildVirtualAttributeData(
               isDescriptorProperty: prop.isDescriptorProperty,
               extendsVirtualIds: [],  // Will be computed in second pass
               isDepthCutoff: prop.isDepthCutoff,
+              baseTypeId,
+              baseTypeLabel,
             });
           }
         }
@@ -2864,83 +2888,171 @@ function layoutVirtualAttributes(
     return;
   }
 
-  // Non-interface kinds: flat layout (unchanged)
-  const sortedVirtualAttrs = [...virtualAttrs].sort(compareByHierarchyThenLabel);
+  // Non-interface kinds: group by ultimate root ancestor (base type)
+  const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualDirectProperty';
 
-  sortedVirtualAttrs.forEach((info, index) => {
-    const nodeId = info.id;
-    if (existingNodeIds.has(nodeId)) return;
+  // Build groups: Map<baseTypeId, { baseTypeLabel, minHierarchyLevel, items }>
+  const groupMap = new Map<string, { baseTypeLabel: string; minHierarchyLevel: number; items: VirtualAttributeInfo[] }>();
+  for (const info of virtualAttrs) {
+    const groupId = info.baseTypeId ?? info.sourceRemId;
+    const groupLabel = info.baseTypeLabel ?? info.sourceRemLabel;
+    const existing = groupMap.get(groupId);
+    const level = info.hierarchyLevel ?? 0;
+    if (existing) {
+      existing.items.push(info);
+      if (level < existing.minHierarchyLevel) existing.minHierarchyLevel = level;
+    } else {
+      groupMap.set(groupId, { baseTypeLabel: groupLabel, minHierarchyLevel: level, items: [info] });
+    }
+  }
 
-    const virtualKind = kind === 'property' ? 'virtualProperty' : 'virtualDirectProperty';
-    const hasChildren = info.children && info.children.length > 0;
-    const isCollapsed = collapsed.has(info.id);
-    const propertyWidth = estimateNodeWidth(info.label, virtualKind);
-    let posX = ownerNode.position.x + 150;
-    let posY = baseY + index * ATTRIBUTE_VERTICAL_SPACING;
+  // Sort groups by minHierarchyLevel then by baseTypeLabel
+  const sortedGroups = [...groupMap.entries()].sort(([, a], [, b]) => {
+    if (a.minHierarchyLevel !== b.minHierarchyLevel) return a.minHierarchyLevel - b.minHierarchyLevel;
+    return a.baseTypeLabel.localeCompare(b.baseTypeLabel);
+  });
 
-    const storedPos = nodePositions?.get(nodeId);
-    if (storedPos) {
-      posX = storedPos.x;
-      posY = storedPos.y;
+  let slotOffset = 0;
+
+  for (const [baseTypeId, group] of sortedGroups) {
+    const groupNodeId = `vpropgroup:${ownerNode.id}:${baseTypeId}`;
+    const sortedItems = [...group.items].sort(compareByHierarchyThenLabel);
+    const groupSize = sortedItems.length;
+
+    const groupCenterSlot = slotOffset + (groupSize - 1) / 2;
+    let groupX = ownerNode.position.x + 150;
+    let groupY = baseY + groupCenterSlot * ATTRIBUTE_VERTICAL_SPACING;
+
+    const storedGroupPos = nodePositions?.get(groupNodeId);
+    if (storedGroupPos) {
+      groupX = storedGroupPos.x;
+      groupY = storedGroupPos.y;
     }
 
-    const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsed, false, undefined, info.isDescriptorProperty);
-    const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
+    const isGroupCollapsed = collapsed.has(groupNodeId);
+    const groupStyle = getNodeStyle('virtualInterfaceGroup', isGroupCollapsed, false);
+    let groupNode: GraphNode;
+    if (!existingNodeIds.has(groupNodeId)) {
+      groupNode = {
+        id: groupNodeId,
+        position: { x: groupX, y: groupY },
+        data: {
+          label: group.baseTypeLabel,
+          remId: groupNodeId,
+          kind: 'virtualInterfaceGroup',
+          sourceRemLabel: group.baseTypeLabel,
+          ownerRemId: ownerNode.id,
+        },
+        style: groupStyle,
+        draggable: true,
+        selectable: true,
+        type: 'virtualInterfaceGroupNode',
+      };
+      nodes.push(groupNode);
+      existingNodeIds.add(groupNodeId);
+    } else {
+      groupNode = nodes.find(n => n.id === groupNodeId)!;
+    }
 
-    nodes.push({
-      id: nodeId,
-      position: { x: posX, y: posY },
-      data: {
-        label: info.label,
-        richText: info.richText,
-        remId: info.id,
-        kind: virtualKind,
-        sourcePropertyId: info.sourcePropertyId,
-        ownerRemId: info.ownerRemId,
-        sourceRemLabel: info.sourceRemLabel,
-        isDescriptorProperty: info.isDescriptorProperty,
-        isDepthCutoff: info.isDepthCutoff,
-      },
-      style: finalStyle,
-      draggable: true,
-      selectable: true,
-      type: `${virtualKind}Node`,
-    });
-    existingNodeIds.add(nodeId);
-
-    const virtualNode = nodes[nodes.length - 1];
-
-    // Create edge from owner REM node to virtual property (like regular properties)
-    const ownerEdgeId = `vattr-link:${ownerNode.id}->${info.id}`;
-    if (!existingEdgeIds.has(ownerEdgeId)) {
+    // Edge: owner → group header (grey solid)
+    const groupEdgeId = `vpropgroup-link:${ownerNode.id}->${groupNodeId}`;
+    if (!existingEdgeIds.has(groupEdgeId)) {
       edges.push({
-        id: ownerEdgeId,
+        id: groupEdgeId,
         source: ownerNode.id,
-        target: nodeId,
+        target: groupNodeId,
         sourceHandle: ownerNode.type === "remNode" ? REM_SOURCE_BOTTOM_HANDLE : ATTRIBUTE_SOURCE_BOTTOM_HANDLE,
         targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
         type: "randomOffset",
         markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
         style: { stroke: "#9ca3af" },
       });
-      existingEdgeIds.add(ownerEdgeId);
+      existingEdgeIds.add(groupEdgeId);
     }
 
-    // Layout virtual children if not collapsed and has children
-    if (hasChildren && !isCollapsed) {
-      layoutVirtualAttributeDescendants(
-        virtualNode,
-        info.children,
-        nodes,
-        edges,
-        existingNodeIds,
-        existingEdgeIds,
-        kind,
-        collapsed,
-        nodePositions
-      );
+    if (!isGroupCollapsed) {
+      const groupWidth =
+        typeof groupNode.style?.width === "number"
+          ? groupNode.style.width
+          : estimateNodeWidth(group.baseTypeLabel, 'virtualInterfaceGroup');
+      const childX = groupX + groupWidth + ATTRIBUTE_HORIZONTAL_SPACING;
+      const startOffset = ((groupSize - 1) / 2) * ATTRIBUTE_VERTICAL_SPACING;
+
+      sortedItems.forEach((info, childIndex) => {
+        const nodeId = info.id;
+        if (existingNodeIds.has(nodeId)) return;
+
+        let posX = childX;
+        let posY = groupY + childIndex * ATTRIBUTE_VERTICAL_SPACING - startOffset;
+
+        const storedPos = nodePositions?.get(nodeId);
+        if (storedPos) {
+          posX = storedPos.x;
+          posY = storedPos.y;
+        }
+
+        const hasChildren = info.children && info.children.length > 0;
+        const isCollapsedItem = collapsed.has(info.id);
+        const nodeStyle = getNodeStyle(virtualKind, hasChildren && isCollapsedItem, false, undefined, info.isDescriptorProperty);
+        const finalStyle = info.isDepthCutoff ? { ...nodeStyle, borderColor: '#e63946', borderWidth: 2 } : nodeStyle;
+
+        nodes.push({
+          id: nodeId,
+          position: { x: posX, y: posY },
+          data: {
+            label: info.label,
+            richText: info.richText,
+            remId: info.id,
+            kind: virtualKind,
+            sourcePropertyId: info.sourcePropertyId,
+            ownerRemId: info.ownerRemId,
+            sourceRemLabel: info.sourceRemLabel,
+            isDescriptorProperty: info.isDescriptorProperty,
+            isDepthCutoff: info.isDepthCutoff,
+          },
+          style: finalStyle,
+          draggable: true,
+          selectable: true,
+          type: `${virtualKind}Node`,
+        });
+        existingNodeIds.add(nodeId);
+
+        const virtualNode = nodes[nodes.length - 1];
+
+        // Edge: group header → child (grey dashed)
+        const childEdgeId = `vpropgroup-child:${groupNodeId}->${nodeId}`;
+        if (!existingEdgeIds.has(childEdgeId)) {
+          edges.push({
+            id: childEdgeId,
+            source: groupNodeId,
+            target: nodeId,
+            sourceHandle: ATTRIBUTE_SOURCE_RIGHT_HANDLE,
+            targetHandle: ATTRIBUTE_TARGET_LEFT_HANDLE,
+            type: "randomOffset",
+            markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
+            style: { stroke: "#9ca3af", strokeDasharray: "4 2" },
+          });
+          existingEdgeIds.add(childEdgeId);
+        }
+
+        if (hasChildren && !isCollapsedItem) {
+          layoutVirtualAttributeDescendants(
+            virtualNode,
+            info.children,
+            nodes,
+            edges,
+            existingNodeIds,
+            existingEdgeIds,
+            kind,
+            collapsed,
+            nodePositions
+          );
+        }
+      });
     }
-  });
+
+    slotOffset += groupSize;
+  }
 }
 
 async function saveMindMapState(
@@ -3099,16 +3211,20 @@ function MindmapWidget() {
       loadComputationContextRef.current
     );
     
-    // Update parentMap to include virtual property nodes
-    setParentMap((prevMap) => {
-      const newMap = new Map(prevMap);
-      for (const node of graph.nodes) {
-        const data = node.data as GraphNodeData;
-        if (data.kind === 'virtualProperty' || data.kind === 'virtualInterface' || data.kind === 'virtualDirectProperty' || data.kind === 'virtualInterfaceGroup') {
-          // Virtual properties and group nodes are children of their ownerRemId
-          if (data.ownerRemId) {
-            newMap.set(node.id, data.ownerRemId);
-          }
+    // Rebuild parentMap from edges — covers all attribute/virtual hierarchies:
+    // attr-link/attr-child (regular properties), vpropgroup-link/vpropgroup-child (virtual property groups),
+    // vgroup-link/vgroup-child (virtual interface groups), vattr-link/vattr-child (virtual attr descendants)
+    setParentMap(() => {
+      const newMap = new Map<string, string>();
+      const ATTR_EDGE_PREFIXES = [
+        'attr-link:', 'attr-child:',
+        'vpropgroup-link:', 'vpropgroup-child:',
+        'vgroup-link:', 'vgroup-child:',
+        'vattr-link:', 'vattr-child:',
+      ];
+      for (const edge of updatedEdges) {
+        if (ATTR_EDGE_PREFIXES.some(prefix => edge.id.startsWith(prefix))) {
+          newMap.set(edge.target, edge.source);
         }
       }
       return newMap;
@@ -3574,7 +3690,7 @@ function MindmapWidget() {
       storePositions(mutated ? adjusted : updated);
       return mutated ? adjusted : updated;
     });
-  }, [parentMap, propertyData, interfaceData, storePositions]);
+  }, [parentMap, propertyData, interfaceData, directPropertyData, storePositions]);
 
 
   const handleLoad = useCallback(async () => {
@@ -4484,8 +4600,9 @@ function MindmapWidget() {
     if (loadedRemId) {
       nodePositionsRef.current = new Map();
       await updateGraph();
+      reactFlowInstance?.fitView({ padding: 0.1, duration: 300 });
     }
-  }, [loadedRemId, updateGraph]);
+  }, [loadedRemId, updateGraph, reactFlowInstance]);
 
   const handleGoBack = useCallback(() => {
     if (historyStack.length === 0) return;
