@@ -1926,25 +1926,27 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     // Stage 1: fetch all per-attribute metadata in parallel (6 calls per attr, all independent)
     const metaResults = await Promise.all(
       childrenRems.map(async (attr) => {
-        const [type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag] = await Promise.all([
+        const [type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag, isDoc] = await Promise.all([
           attr.getType(),
           getRemText(plugin, attr),
           getExtendsParents(plugin, attr).catch(() => [] as PluginRem[]),
           hasTag(plugin, attr, "Private"),
           isPropertyDescriptor(plugin, attr),
           hasTag(plugin, attr, "Export"),
+          attr.isDocument(),
         ]);
-        return { attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag };
+        return { attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag, isDoc };
       })
     );
 
     // Stage 2: synchronous filter — apply the same skip conditions as before (no awaits needed)
-    const filteredMeta = metaResults.filter(({ attr, type, isDescriptorProperty, hasExportTag }) => {
+    const filteredMeta = metaResults.filter(({ attr, type, isDescriptorProperty, hasExportTag, isDoc }) => {
       if (skipTopLevelForId && attr._id === skipTopLevelForId) return false;
       if (type === RemType.PORTAL) return false;
       // Properties (documents) and direct properties (descriptors) are always exported
       // Regular interfaces require the Export tag
-      const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
+      // Documents are inherently exported (they are properties by nature)
+      const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag || isDoc;
       // Skip non-exported sub-attributes (children of interfaces)
       if (isSubAttribute && !topLevelIsDocument && !isExported) return false;
       return true;
@@ -1952,10 +1954,10 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
 
     // Stage 3: recurse for sub-children in parallel, then assemble results
     const attrs: AttributeNodeInfo[] = await Promise.all(
-      filteredMeta.map(async ({ attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag }) => {
+      filteredMeta.map(async ({ attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag, isDoc }) => {
         const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
         const extendsIds = [...new Set(parentRems.map((p) => p._id))];
-        const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
+        const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag || isDoc;
         const hierarchyLevel = isSubAttribute ? parentHierarchyLevel : -1;
         // Property descriptors should not have any children (they are terminal)
         const subChildren = isDescriptorProperty
