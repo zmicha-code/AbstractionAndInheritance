@@ -3200,6 +3200,7 @@ function MindmapWidget() {
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; remId: string; label: string } | null>(null);
   const [virtualContextMenu, setVirtualContextMenu] = useState<{ x: number; y: number; nodeId: string; label: string; sourcePropertyId: string; ownerRemId: string } | null>(null);
+  const [groupContextMenu, setGroupContextMenu] = useState<{ x: number; y: number; nodeId: string; label: string; ownerRemId: string } | null>(null);
   const [paneContextMenu, setPaneContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [parentMap, setParentMap] = useState<Map<string, string>>(new Map());
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
@@ -4228,6 +4229,7 @@ function MindmapWidget() {
   const handleContextMenuClose = useCallback(() => {
     setContextMenu(null);
     setVirtualContextMenu(null);
+    setGroupContextMenu(null);
     setPaneContextMenu(null);
   }, []);
 
@@ -4500,6 +4502,109 @@ function MindmapWidget() {
     handleContextMenuClose();
   }, [virtualContextMenu, plugin, loadHierarchy, loadedRemId, handleContextMenuClose, nodes]);
 
+  const handleImplementAllGroup = useCallback(async () => {
+    if (!groupContextMenu) return;
+
+    const { nodeId, ownerRemId, label } = groupContextMenu;
+    const isInterfaceGroup = nodeId.startsWith('vgroup:');
+    const childEdgePrefix = isInterfaceGroup
+      ? `vgroup-child:${nodeId}->`
+      : `vpropgroup-child:${nodeId}->`;
+
+    // Collect child virtual node data from edges
+    const childItems: { sourcePropertyId: string; kind: GraphNodeData['kind']; isDescriptorProperty?: boolean }[] = [];
+    for (const edge of edges) {
+      if (!edge.id.startsWith(childEdgePrefix)) continue;
+      const childNode = nodes.find(n => n.id === edge.target);
+      const nodeData = childNode?.data as GraphNodeData | undefined;
+      if (!nodeData?.sourcePropertyId) continue;
+      childItems.push({
+        sourcePropertyId: nodeData.sourcePropertyId,
+        kind: nodeData.kind,
+        isDescriptorProperty: nodeData.isDescriptorProperty,
+      });
+    }
+
+    if (childItems.length === 0) {
+      handleContextMenuClose();
+      return;
+    }
+
+    try {
+      const ownerRem = await plugin.rem.findOne(ownerRemId);
+      if (!ownerRem) {
+        setError("Could not find owner REM");
+        handleContextMenuClose();
+        return;
+      }
+
+      // Determine type from first child
+      const firstKind = childItems[0].kind;
+      const isProperty = firstKind === 'virtualProperty';
+      const isDescriptorProperty = childItems[0].isDescriptorProperty;
+
+      // Create one new REM named after the group
+      const newRem = await plugin.rem.createRem();
+      if (!newRem) {
+        setError("Failed to create new REM");
+        handleContextMenuClose();
+        return;
+      }
+
+      await newRem.setText([label]);
+      await newRem.setParent(ownerRem);
+
+      if (isProperty) {
+        await newRem.setIsDocument(true);
+      } else if (isDescriptorProperty) {
+        await newRem.setType(SetRemType.DESCRIPTOR);
+      }
+
+      // Create one extends descriptor with one reference child per grouped source
+      const extendsDesc = await plugin.rem.createRem();
+      if (extendsDesc) {
+        await extendsDesc.setText(["extends"]);
+        await extendsDesc.setParent(newRem);
+        await extendsDesc.setType(SetRemType.DESCRIPTOR);
+
+        for (const item of childItems) {
+          const refChild = await plugin.rem.createRem();
+          if (refChild) {
+            await refChild.setText([{ i: "q", _id: item.sourcePropertyId }]);
+            await refChild.setParent(extendsDesc);
+          }
+        }
+      }
+
+      // Update descendants that extend any of the grouped source properties
+      let totalUpdated = 0;
+      for (const item of childItems) {
+        const sourceProperty = await plugin.rem.findOne(item.sourcePropertyId);
+        if (!sourceProperty) continue;
+        const updatedCount = isProperty
+          ? await updateDescendantPropertyReferences(plugin, newRem, ownerRem, sourceProperty)
+          : await updateDescendantInterfaceReferences(plugin, newRem, ownerRem, sourceProperty);
+        totalUpdated += updatedCount;
+      }
+
+      let msg = `Implemented group "${label}".`;
+      if (totalUpdated > 0) {
+        const descWord = totalUpdated === 1 ? 'descendant' : 'descendants';
+        msg += ` Updated ${totalUpdated} ${descWord}.`;
+      }
+      await plugin.app.toast(msg);
+
+      if (loadedRemId) {
+        await loadHierarchy(loadedRemId);
+      }
+    } catch (err) {
+      console.error("Failed to implement all:", err);
+      setError("Failed to implement all");
+    }
+
+    handleContextMenuClose();
+  }, [groupContextMenu, plugin, loadHierarchy, loadedRemId, handleContextMenuClose, nodes, edges]);
+
   const collectAttributeIds = useCallback((attrs: AttributeNodeInfo[]): string[] => {
     const ids: string[] = [];
     for (const attr of attrs) {
@@ -4713,6 +4818,18 @@ function MindmapWidget() {
           nodeId: node.id,
           label: label.length > 0 ? label : '(Untitled)',
           sourcePropertyId: nodeData.sourcePropertyId,
+          ownerRemId: nodeData.ownerRemId,
+        });
+        return;
+      }
+
+      // Check if this is a virtual interface group node
+      if (nodeData.kind === 'virtualInterfaceGroup' && nodeData.ownerRemId) {
+        setGroupContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          nodeId: node.id,
+          label: label.length > 0 ? label : '(Untitled Group)',
           ownerRemId: nodeData.ownerRemId,
         });
         return;
@@ -5245,6 +5362,38 @@ function MindmapWidget() {
               onClick={handleEditVirtualRem}
             >
               Edit Rem
+            </button>
+          </div>
+        )}
+        {groupContextMenu && (
+          <div
+            style={{
+              position: 'fixed',
+              left: groupContextMenu.x,
+              top: groupContextMenu.y,
+              background: '#ffffff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 4,
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+              zIndex: 1000,
+              minWidth: 160,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              style={{
+                padding: '8px 12px',
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                color: '#374151',
+              }}
+              onClick={handleImplementAllGroup}
+            >
+              Implement All
             </button>
           </div>
         )}
