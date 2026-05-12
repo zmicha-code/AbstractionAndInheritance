@@ -1945,8 +1945,8 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       if (type === RemType.PORTAL) return false;
       // Properties (documents) and direct properties (descriptors) are always exported
       // Regular interfaces require the Export tag
-      // Documents are inherently exported (they are properties by nature)
-      const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag || isDoc;
+      // Documents are inherently exported (they are properties by nature). NOT ANYMORE INHERENTLY EXPORTED
+      const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
       // Skip non-exported sub-attributes (children of interfaces)
       if (isSubAttribute && !topLevelIsDocument && !isExported) return false;
       return true;
@@ -1957,7 +1957,7 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
       filteredMeta.map(async ({ attr, type, labelRaw, parentRems, isPrivate, isDescriptorProperty, hasExportTag, isDoc }) => {
         const label = (labelRaw ?? "").trim() || "(Untitled Attribute)";
         const extendsIds = [...new Set(parentRems.map((p) => p._id))];
-        const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag || isDoc;
+        const isExported = topLevelIsDocument || isDescriptorProperty || hasExportTag;
         const hierarchyLevel = isSubAttribute ? parentHierarchyLevel : -1;
         // Property descriptors should not have any children (they are terminal)
         const subChildren = isDescriptorProperty
