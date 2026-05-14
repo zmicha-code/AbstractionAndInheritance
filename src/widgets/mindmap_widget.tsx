@@ -1853,6 +1853,30 @@ function collectRemsForProperties(
   return Array.from(remMap.values());
 }
 
+function buildHierarchyRemIdSet(centerId: string, ancestors: HierarchyNode[], descendants: HierarchyNode[]): Set<string> {
+  const ids = new Set<string>([centerId]);
+  const stack: HierarchyNode[] = [...ancestors, ...descendants];
+  while (stack.length > 0) {
+    const hn = stack.pop()!;
+    ids.add(hn.id);
+    if (hn.children && hn.children.length > 0) {
+      stack.push(...hn.children);
+    }
+  }
+  return ids;
+}
+
+function collectVirtualWithChildren(attrs: VirtualAttributeInfo[]): string[] {
+  const ids: string[] = [];
+  for (const attr of attrs) {
+    if (attr.children && attr.children.length > 0) {
+      ids.push(attr.id);
+      ids.push(...collectVirtualWithChildren(attr.children));
+    }
+  }
+  return ids;
+}
+
 async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal, hierarchyRemIds?: Set<string>, context?: LoadComputationContext): Promise<AttributeData> {
   const byOwner: Record<string, AttributeNodeInfo[]> = {};
   const byId: Record<string, AttributeDetail> = {};
@@ -1888,8 +1912,8 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     if (!isSubAttribute) {
       const children = await getCleanChildren(plugin, owner);
       if (topLevelIsDocument) {
-        const docFlags = await Promise.all(children.map((child) => child.isDocument()));
-        childrenRems = children.filter((_, i) => docFlags[i]);
+        // Collect all clean children; Stage 2 will keep documents (properties) and property-descriptors (direct properties)
+        childrenRems = children;
       } else {
         const [structuralChildren, extendsChildren] = await Promise.all([
           getStructuralDescendantChildren(plugin, owner),
@@ -1943,6 +1967,8 @@ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelI
     const filteredMeta = metaResults.filter(({ attr, type, isDescriptorProperty, hasExportTag, isDoc }) => {
       if (skipTopLevelForId && attr._id === skipTopLevelForId) return false;
       if (type === RemType.PORTAL) return false;
+      // In property mode top-level, only keep documents (properties) and property-descriptor children (direct properties)
+      if (!isSubAttribute && topLevelIsDocument && !isDoc && !isDescriptorProperty) return false;
       // Properties (documents) and direct properties (descriptors) are always exported
       // Regular interfaces require the Export tag
       // Documents are inherently exported (they are properties by nature). NOT ANYMORE INHERENTLY EXPORTED
@@ -3395,18 +3421,29 @@ function MindmapWidget() {
           }
         }
         const t1 = performance.now();
-        // Run sequentially so the second call benefits from extendsChildrenCache populated by the first
-        const properties = await buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal, undefined, loadComputationContextRef.current);
-        const t1b = performance.now();
-        console.log(`[perf] phase 2a buildAttributeData (properties): ${(t1b - t1).toFixed(0)}ms | propOwners=${Object.keys(properties.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
-        const interfacesRaw = await buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal, hierarchyRemIds, loadComputationContextRef.current);
-        console.log(`[perf] phase 2b buildAttributeData (interfaces): ${(performance.now() - t1b).toFixed(0)}ms | ifaceOwners=${Object.keys(interfacesRaw.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
+        // Lazy loading: only load the attribute kind needed for the active view.
+        // The other kind is loaded on demand the first time the user switches view modes.
+        let properties: AttributeData = { byOwner: {}, byId: {} };
+        let interfaces: AttributeData = { byOwner: {}, byId: {} };
+        let directProperties: AttributeData = { byOwner: {}, byId: {} };
+        if (attributeType === 'property') {
+          // Property view: load properties + directProperties from one call; interfaces loaded lazily on switch
+          const propertiesRaw = await buildAttributeData(plugin, remsForAttributes, true, undefined, timeoutSignal, undefined, loadComputationContextRef.current);
+          const t1b = performance.now();
+          console.log(`[perf] phase 2a buildAttributeData (properties+directProperties): ${(t1b - t1).toFixed(0)}ms | propOwners=${Object.keys(propertiesRaw.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
+          const { regularInterfaces: propertiesSplit, directProperties: dp } = splitInterfaceData(propertiesRaw);
+          properties = propertiesSplit;
+          directProperties = dp;
+        } else {
+          // Interface view: load interfaces/directProperties only; properties loaded lazily on switch
+          const interfacesRaw = await buildAttributeData(plugin, remsForAttributes, false, undefined, timeoutSignal, hierarchyRemIds, loadComputationContextRef.current);
+          const t1b = performance.now();
+          console.log(`[perf] phase 2b buildAttributeData (interfaces): ${(t1b - t1).toFixed(0)}ms | ifaceOwners=${Object.keys(interfacesRaw.byOwner).length} cacheSize=${loadComputationContextRef.current.extendsChildrenCache.size}`);
+          const { regularInterfaces: interfacesUnfiltered, directProperties: dp } = splitInterfaceData(interfacesRaw);
+          interfaces = filterExportedInterfaces(interfacesUnfiltered);
+          directProperties = dp;
+        }
         console.log(`[perf] phase 2 buildAttributeData total: ${(performance.now() - t1).toFixed(0)}ms | rems=${remsForAttributes.length}`);
-
-        // Split interfaces into regular interfaces and direct properties (Property-tagged)
-        const { regularInterfaces: interfacesUnfiltered, directProperties } = splitInterfaceData(interfacesRaw);
-        // Filter interfaces to only show those with Export tag (or with exported descendants)
-        const interfaces = filterExportedInterfaces(interfacesUnfiltered);
 
         // 1.3
         const collapsed = new Set<string>();
@@ -3438,76 +3475,51 @@ function MindmapWidget() {
         );
         console.log(`[perf] phase 3 buildCompleteChildToParentsMap: ${(performance.now() - t2).toFixed(0)}ms | entries=${Object.keys(childToParentsMap).length}`);
 
-        // Helper to recursively collect virtual IDs with children
-        const collectVirtualWithChildren = (attrs: VirtualAttributeInfo[]): string[] => {
-          const ids: string[] = [];
-          for (const attr of attrs) {
-            if (attr.children && attr.children.length > 0) {
-              ids.push(attr.id);
-              ids.push(...collectVirtualWithChildren(attr.children));
-            }
-          }
-          return ids;
-        };
-
         const t3 = performance.now();
-        // Build virtual property data and collapse those with children
-        const virtualPropertyData = buildVirtualAttributeData(
-          properties,
-          rem._id,
-          ancestorTreesResult,
-          descendantTreesResult,
-          'property',
-          childToParentsMap,
-          new Set([rem._id])
-        );
-        loadComputationContextRef.current.virtualDataByKind.property = virtualPropertyData;
-
-        for (const virtualAttrs of Object.values(virtualPropertyData.byOwner)) {
-          const virtualIds = collectVirtualWithChildren(virtualAttrs);
-          for (const id of virtualIds) {
-            collapsed.add(id);
+        // Build virtual data only for the active view; the rest is built lazily on first switch
+        if (attributeType === 'property') {
+          const virtualPropertyData = buildVirtualAttributeData(
+            properties,
+            rem._id,
+            ancestorTreesResult,
+            descendantTreesResult,
+            'property',
+            childToParentsMap,
+            new Set([rem._id])
+          );
+          loadComputationContextRef.current.virtualDataByKind.property = virtualPropertyData;
+          for (const virtualAttrs of Object.values(virtualPropertyData.byOwner)) {
+            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
+          }
+          const virtualDirectPropertyData = buildVirtualAttributeData(
+            directProperties,
+            rem._id,
+            ancestorTreesResult,
+            descendantTreesResult,
+            'directProperty',
+            childToParentsMap,
+            new Set([rem._id])
+          );
+          loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDirectPropertyData;
+          for (const virtualAttrs of Object.values(virtualDirectPropertyData.byOwner)) {
+            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
+          }
+        } else {
+          const virtualInterfaceData = buildVirtualAttributeData(
+            interfaces,
+            rem._id,
+            ancestorTreesResult,
+            descendantTreesResult,
+            'interface',
+            childToParentsMap,
+            new Set([rem._id])
+          );
+          loadComputationContextRef.current.virtualDataByKind.interface = virtualInterfaceData;
+          for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
+            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
           }
         }
-
-        // Build virtual interface data and collapse those with children
-        const virtualInterfaceData = buildVirtualAttributeData(
-          interfaces,
-          rem._id,
-          ancestorTreesResult,
-          descendantTreesResult,
-          'interface',
-          childToParentsMap,
-          new Set([rem._id])
-        );
-        loadComputationContextRef.current.virtualDataByKind.interface = virtualInterfaceData;
-
-        for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
-          const virtualIds = collectVirtualWithChildren(virtualAttrs);
-          for (const id of virtualIds) {
-            collapsed.add(id);
-          }
-        }
-
-        // Build virtual directProperty data and collapse those with children
-        const virtualDirectPropertyData = buildVirtualAttributeData(
-          directProperties,
-          rem._id,
-          ancestorTreesResult,
-          descendantTreesResult,
-          'directProperty',
-          childToParentsMap,
-          new Set([rem._id])
-        );
-        loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDirectPropertyData;
-
-        for (const virtualAttrs of Object.values(virtualDirectPropertyData.byOwner)) {
-          const virtualIds = collectVirtualWithChildren(virtualAttrs);
-          for (const id of virtualIds) {
-            collapsed.add(id);
-          }
-        }
-        console.log(`[perf] phase 4 buildVirtualAttributeData x3: ${(performance.now() - t3).toFixed(0)}ms`);
+        console.log(`[perf] phase 4 buildVirtualAttributeData: ${(performance.now() - t3).toFixed(0)}ms`);
 
         const hidden = new Set<string>();
 
@@ -3516,9 +3528,10 @@ function MindmapWidget() {
         setDescendantOwnerMap(buildDescendantOwnerMap(descendantTreesResult));
         setCollapsedNodes(collapsed);
         nodePositionsRef.current = new Map<string, { x: number; y: number }>();
-        setPropertyData(properties);
-        setInterfaceData(interfaces);
-        setDirectPropertyData(directProperties);
+        // Only store data for the active mode; null signals lazy-load on first switch to the other mode
+        setPropertyData(attributeType === 'property' ? properties : null);
+        setInterfaceData(attributeType === 'interface' ? interfaces : null);
+        setDirectPropertyData(directProperties); // always set — both modes now produce it
         setHiddenAttributes(hidden);
         setLoadedRemId(rem._id);
         setLoadedRemName(centerLabel);
@@ -3981,12 +3994,65 @@ function MindmapWidget() {
     setHiddenAttributes(nextHidden);
     setHiddenVirtualAttributes(nextHiddenVirtual);
     
-    // Get new data
-    const newPrimaryData = newType === 'property' ? propertyData : interfaceData;
-    const newSecondaryData = newType === 'property' ? directPropertyData : undefined;
+    // Get new data — may be null if this mode hasn't been loaded yet (lazy loading)
+    let newPrimaryData: AttributeData | null = newType === 'property' ? propertyData : interfaceData;
+    let newSecondaryData: AttributeData | null | undefined = newType === 'property' ? directPropertyData : undefined;
     const primaryKind: 'property' | 'interface' | 'directProperty' = newType === 'property' ? 'property' : 'interface';
     const secondaryKind: 'property' | 'interface' | 'directProperty' | undefined = newType === 'property' ? 'directProperty' : undefined;
-    
+
+    // If the target mode's data was deferred at initial load, fetch it now
+    let collapsedForGraph = collapsedNodes;
+    if (!newPrimaryData) {
+      const rem = await findRemCached(plugin, loadedRemId, loadComputationContextRef.current);
+      if (!rem) return;
+      const remsForAttributes = collectRemsForProperties(rem, ancestorTrees, descendantTrees);
+      const childToParentsMap = loadComputationContextRef.current.childToParentsMap ?? {};
+      const newCollapsed = new Set(collapsedNodes);
+
+      if (newType === 'property') {
+        const propertiesRaw = await buildAttributeData(plugin, remsForAttributes, true, undefined, undefined, undefined, loadComputationContextRef.current);
+        const { regularInterfaces: propertiesSplit, directProperties: dp } = splitInterfaceData(propertiesRaw);
+        newPrimaryData = propertiesSplit;
+        newSecondaryData = dp;
+        for (const detail of Object.values(newPrimaryData.byId)) {
+          if (detail.hasChildren) newCollapsed.add(detail.id);
+        }
+        for (const detail of Object.values(dp.byId)) {
+          if (detail.hasChildren) newCollapsed.add(detail.id);
+        }
+        const virtualProp = buildVirtualAttributeData(newPrimaryData, rem._id, ancestorTrees, descendantTrees, 'property', childToParentsMap, new Set([rem._id]));
+        loadComputationContextRef.current.virtualDataByKind.property = virtualProp;
+        for (const virtualAttrs of Object.values(virtualProp.byOwner)) {
+          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+        }
+        const virtualDp = buildVirtualAttributeData(dp, rem._id, ancestorTrees, descendantTrees, 'directProperty', childToParentsMap, new Set([rem._id]));
+        loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDp;
+        for (const virtualAttrs of Object.values(virtualDp.byOwner)) {
+          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+        }
+        setPropertyData(newPrimaryData);
+        setDirectPropertyData(dp);
+      } else {
+        const hierarchyRemIds = buildHierarchyRemIdSet(loadedRemId, ancestorTrees, descendantTrees);
+        const interfacesRaw = await buildAttributeData(plugin, remsForAttributes, false, undefined, undefined, hierarchyRemIds, loadComputationContextRef.current);
+        const { regularInterfaces: interfacesUnfiltered, directProperties: dp } = splitInterfaceData(interfacesRaw);
+        newPrimaryData = filterExportedInterfaces(interfacesUnfiltered);
+        for (const detail of Object.values(newPrimaryData.byId)) {
+          if (detail.hasChildren) newCollapsed.add(detail.id);
+        }
+        const virtualIface = buildVirtualAttributeData(newPrimaryData, rem._id, ancestorTrees, descendantTrees, 'interface', childToParentsMap, new Set([rem._id]));
+        loadComputationContextRef.current.virtualDataByKind.interface = virtualIface;
+        for (const virtualAttrs of Object.values(virtualIface.byOwner)) {
+          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+        }
+        setInterfaceData(newPrimaryData);
+        setDirectPropertyData(dp);
+      }
+
+      collapsedForGraph = newCollapsed;
+      setCollapsedNodes(newCollapsed);
+    }
+
     if (!newPrimaryData) return;
     const graph = await createGraphData(
       plugin,
@@ -3995,7 +4061,7 @@ function MindmapWidget() {
       loadedRemRichText,
       ancestorTrees,
       descendantTrees,
-      collapsedNodes,
+      collapsedForGraph,
       newPrimaryData,
       nextHidden,
       nextHiddenVirtual,
