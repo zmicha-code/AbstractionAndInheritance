@@ -32,6 +32,8 @@ import {
   getNodeStyle,
 } from "../components/Nodes";
 
+import { makeDefaultView } from "../utils/defaultView";
+
 type HierarchyNode = {
   id: string;
   name: string;
@@ -3520,6 +3522,9 @@ function MindmapWidget() {
           }
         }
         console.log(`[perf] phase 4 buildVirtualAttributeData: ${(performance.now() - t3).toFixed(0)}ms`);
+
+        //
+        makeDefaultView(collapsed, ancestorTreesResult, descendantTreesResult);
 
         const hidden = new Set<string>();
 
