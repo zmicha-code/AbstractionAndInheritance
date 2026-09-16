@@ -1,24 +1,18 @@
 # Mindmap modules
 
-`src/widgets/mindmap_widget.tsx` is being split so individual files stay small enough to commit directly.
+Shared code extracted from `src/widgets/mindmap_widget.tsx`.
 
-## Present on main
+## On main
 
-- `types.ts`
-- `timeout.ts`
-- `constants.ts`
-- `cache.ts`
-- `state.ts`
-- `flowNodes.tsx`
-- `hierarchy.ts`
-- `remLayout.ts`
-- `attributeData.ts`
-- `virtualData.ts`
-- `graph.ts`
+- `types.ts`, `timeout.ts`, `constants.ts`, `cache.ts`, `state.ts`
+- `flowNodes.tsx`, `hierarchy.ts`, `remLayout.ts`, `graph.ts`
+- `attributeData.ts`, `virtualData.ts`
+- `attributeTrees.ts`, `attributeLayout.ts` (barrel)
+- `virtualDescendants.ts`, `virtualLayout.ts` (barrel)
 
-## Still to add before the widget can drop duplicated code
+## Still required before slimming the widget
 
-- `attributeLayout.ts`
-- `virtualLayout.ts`
+- `virtualAttributes.ts` — `layoutVirtualAttributes`
+- `attributeIntegrate.ts` — `integrateAttributeGraph`
 
-After those two files exist, replace everything in `mindmap_widget.tsx` before `function MindmapWidget()` with imports from `src/mindmap/`.
+After those two exist, delete everything in `mindmap_widget.tsx` before `function MindmapWidget()` and import from `src/mindmap/` instead.
