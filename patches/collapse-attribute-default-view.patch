@@ -212,3 +212,5 @@ index edfc19c..3196e4a 100644
 -    [loadedRemId, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData]
 +    [loadedRemId, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, directPropertyData]
    );
+ 
+   const handleContextMenuClose = useCallback(() => {
