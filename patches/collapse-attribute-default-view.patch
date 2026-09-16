@@ -1,1 +1,214 @@
-This patch is applied in the working tree; see following commit for mindmap_widget.tsx if present.
+diff --git a/src/widgets/mindmap_widget.tsx b/src/widgets/mindmap_widget.tsx
+index edfc19c..3196e4a 100644
+--- a/src/widgets/mindmap_widget.tsx
++++ b/src/widgets/mindmap_widget.tsx
+@@ -32,7 +32,7 @@ import {
+   getNodeStyle,
+ } from "../components/Nodes";
+ 
+-import { makeDefaultView } from "../utils/defaultView";
++import { makeDefaultView, findInAttributeForest } from "../utils/defaultView";
+ 
+ type HierarchyNode = {
+   id: string;
+@@ -1868,17 +1868,6 @@ function buildHierarchyRemIdSet(centerId: string, ancestors: HierarchyNode[], de
+   return ids;
+ }
+ 
+-function collectVirtualWithChildren(attrs: VirtualAttributeInfo[]): string[] {
+-  const ids: string[] = [];
+-  for (const attr of attrs) {
+-    if (attr.children && attr.children.length > 0) {
+-      ids.push(attr.id);
+-      ids.push(...collectVirtualWithChildren(attr.children));
+-    }
+-  }
+-  return ids;
+-}
+-
+ async function buildAttributeData(plugin: RNPlugin, rems: PluginRem[], topLevelIsDocument: boolean, skipTopLevelForId?: string, signal?: TimeoutSignal, hierarchyRemIds?: Set<string>, context?: LoadComputationContext): Promise<AttributeData> {
+   const byOwner: Record<string, AttributeNodeInfo[]> = {};
+   const byId: Record<string, AttributeDetail> = {};
+@@ -3447,23 +3436,8 @@ function MindmapWidget() {
+         }
+         console.log(`[perf] phase 2 buildAttributeData total: ${(performance.now() - t1).toFixed(0)}ms | rems=${remsForAttributes.length}`);
+ 
+-        // 1.3
++        // 1.3 Default collapse is applied after virtual attribute trees are built.
+         const collapsed = new Set<string>();
+-        for (const detail of Object.values(properties.byId)) {
+-          if (detail.hasChildren) {
+-            collapsed.add(detail.id);
+-          }
+-        }
+-        for (const detail of Object.values(interfaces.byId)) {
+-          if (detail.hasChildren) {
+-            collapsed.add(detail.id);
+-          }
+-        }
+-        for (const detail of Object.values(directProperties.byId)) {
+-          if (detail.hasChildren) {
+-            collapsed.add(detail.id);
+-          }
+-        }
+ 
+         // 1.4 Build complete parent map once per load for virtual computations and edge completion
+         const t2 = performance.now();
+@@ -3490,9 +3464,6 @@ function MindmapWidget() {
+             new Set([rem._id])
+           );
+           loadComputationContextRef.current.virtualDataByKind.property = virtualPropertyData;
+-          for (const virtualAttrs of Object.values(virtualPropertyData.byOwner)) {
+-            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
+-          }
+           const virtualDirectPropertyData = buildVirtualAttributeData(
+             directProperties,
+             rem._id,
+@@ -3503,9 +3474,6 @@ function MindmapWidget() {
+             new Set([rem._id])
+           );
+           loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDirectPropertyData;
+-          for (const virtualAttrs of Object.values(virtualDirectPropertyData.byOwner)) {
+-            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
+-          }
+         } else {
+           const virtualInterfaceData = buildVirtualAttributeData(
+             interfaces,
+@@ -3517,14 +3485,18 @@ function MindmapWidget() {
+             new Set([rem._id])
+           );
+           loadComputationContextRef.current.virtualDataByKind.interface = virtualInterfaceData;
+-          for (const virtualAttrs of Object.values(virtualInterfaceData.byOwner)) {
+-            for (const id of collectVirtualWithChildren(virtualAttrs)) collapsed.add(id);
+-          }
+         }
+         console.log(`[perf] phase 4 buildVirtualAttributeData: ${(performance.now() - t3).toFixed(0)}ms`);
+ 
+         //
+-        makeDefaultView(collapsed, ancestorTreesResult, descendantTreesResult);
++        makeDefaultView(collapsed, ancestorTreesResult, descendantTreesResult, [
++          properties.byOwner,
++          interfaces.byOwner,
++          directProperties.byOwner,
++          loadComputationContextRef.current.virtualDataByKind.property?.byOwner,
++          loadComputationContextRef.current.virtualDataByKind.directProperty?.byOwner,
++          loadComputationContextRef.current.virtualDataByKind.interface?.byOwner,
++        ]);
+ 
+         const hidden = new Set<string>();
+ 
+@@ -4019,22 +3991,16 @@ function MindmapWidget() {
+         const { regularInterfaces: propertiesSplit, directProperties: dp } = splitInterfaceData(propertiesRaw);
+         newPrimaryData = propertiesSplit;
+         newSecondaryData = dp;
+-        for (const detail of Object.values(newPrimaryData.byId)) {
+-          if (detail.hasChildren) newCollapsed.add(detail.id);
+-        }
+-        for (const detail of Object.values(dp.byId)) {
+-          if (detail.hasChildren) newCollapsed.add(detail.id);
+-        }
+         const virtualProp = buildVirtualAttributeData(newPrimaryData, rem._id, ancestorTrees, descendantTrees, 'property', childToParentsMap, new Set([rem._id]));
+         loadComputationContextRef.current.virtualDataByKind.property = virtualProp;
+-        for (const virtualAttrs of Object.values(virtualProp.byOwner)) {
+-          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+-        }
+         const virtualDp = buildVirtualAttributeData(dp, rem._id, ancestorTrees, descendantTrees, 'directProperty', childToParentsMap, new Set([rem._id]));
+         loadComputationContextRef.current.virtualDataByKind.directProperty = virtualDp;
+-        for (const virtualAttrs of Object.values(virtualDp.byOwner)) {
+-          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+-        }
++        makeDefaultView(newCollapsed, ancestorTrees, descendantTrees, [
++          newPrimaryData.byOwner,
++          dp.byOwner,
++          virtualProp.byOwner,
++          virtualDp.byOwner,
++        ]);
+         setPropertyData(newPrimaryData);
+         setDirectPropertyData(dp);
+       } else {
+@@ -4042,14 +4008,12 @@ function MindmapWidget() {
+         const interfacesRaw = await buildAttributeData(plugin, remsForAttributes, false, undefined, undefined, hierarchyRemIds, loadComputationContextRef.current);
+         const { regularInterfaces: interfacesUnfiltered, directProperties: dp } = splitInterfaceData(interfacesRaw);
+         newPrimaryData = filterExportedInterfaces(interfacesUnfiltered);
+-        for (const detail of Object.values(newPrimaryData.byId)) {
+-          if (detail.hasChildren) newCollapsed.add(detail.id);
+-        }
+         const virtualIface = buildVirtualAttributeData(newPrimaryData, rem._id, ancestorTrees, descendantTrees, 'interface', childToParentsMap, new Set([rem._id]));
+         loadComputationContextRef.current.virtualDataByKind.interface = virtualIface;
+-        for (const virtualAttrs of Object.values(virtualIface.byOwner)) {
+-          for (const id of collectVirtualWithChildren(virtualAttrs)) newCollapsed.add(id);
+-        }
++        makeDefaultView(newCollapsed, ancestorTrees, descendantTrees, [
++          newPrimaryData.byOwner,
++          virtualIface.byOwner,
++        ]);
+         setInterfaceData(newPrimaryData);
+         setDirectPropertyData(dp);
+       }
+@@ -4163,20 +4127,13 @@ function MindmapWidget() {
+         ...collectIdsWithChildren(ancestorTrees),
+         ...collectIdsWithChildren(descendantTrees),
+       ]);
+-      if (primaryData) {
+-        for (const detail of Object.values(primaryData.byId)) {
+-          if (detail.hasChildren) {
+-            allIds.add(detail.id);
+-          }
+-        }
+-      }
+-      if (secondaryData) {
+-        for (const detail of Object.values(secondaryData.byId)) {
+-          if (detail.hasChildren) {
+-            allIds.add(detail.id);
+-          }
+-        }
+-      }
++      makeDefaultView(allIds, ancestorTrees, descendantTrees, [
++        primaryData?.byOwner,
++        secondaryData?.byOwner,
++        loadComputationContextRef.current.virtualDataByKind.property?.byOwner,
++        loadComputationContextRef.current.virtualDataByKind.directProperty?.byOwner,
++        loadComputationContextRef.current.virtualDataByKind.interface?.byOwner,
++      ]);
+       setCollapsedNodes(allIds);
+     }
+     // Note: updateGraph() is called automatically by the useEffect that depends on collapsedNodes
+@@ -4258,12 +4215,11 @@ function MindmapWidget() {
+         return;
+       }
+ 
+-      // Attribute nodes: keep simple per-node toggle
++      // Attribute nodes: toggle based on the display tree, not byId.hasChildren
+       let hasChildren = false;
+       if (data?.kind === "property" || data?.kind === "interface" || data?.kind === "directProperty") {
+         const currentData = data.kind === "property" ? propertyData : data.kind === "interface" ? interfaceData : directPropertyData;
+-        const detail = currentData?.byId[targetId];
+-        hasChildren = !!detail?.hasChildren;
++        hasChildren = !!findInAttributeForest(currentData?.byOwner, targetId)?.children?.length;
+       } else if (data?.kind === "virtualInterfaceGroup") {
+         // Group header nodes are always collapsible (they always have children)
+         const groupNodeId = data.remId;
+@@ -4272,10 +4228,12 @@ function MindmapWidget() {
+         setCollapsedNodes(next);
+         return;
+       } else if (data?.kind === "virtualProperty" || data?.kind === "virtualInterface" || data?.kind === "virtualDirectProperty") {
+-        // For virtual attributes, check if the source property has children
+-        const currentData = data.kind === "virtualProperty" ? propertyData : data.kind === "virtualInterface" ? interfaceData : directPropertyData;
+-        if (data.sourcePropertyId && currentData?.byId[data.sourcePropertyId]) {
+-          hasChildren = !!currentData.byId[data.sourcePropertyId].hasChildren;
++        const virtualKind = data.kind === "virtualProperty" ? "property" : data.kind === "virtualInterface" ? "interface" : "directProperty";
++        const virtualForest = loadComputationContextRef.current.virtualDataByKind[virtualKind]?.byOwner;
++        hasChildren = !!findInAttributeForest(virtualForest, data.remId)?.children?.length;
++        if (!hasChildren) {
++          const sourceData = virtualKind === "property" ? propertyData : virtualKind === "interface" ? interfaceData : directPropertyData;
++          hasChildren = !!findInAttributeForest(sourceData?.byOwner, data.sourcePropertyId ?? "")?.children?.length;
+         }
+         // Toggle collapsed state using the virtual attribute's own ID (info.id format)
+         if (!hasChildren) return;
+@@ -4294,7 +4252,7 @@ function MindmapWidget() {
+       next.has(targetId) ? next.delete(targetId) : next.add(targetId);
+       setCollapsedNodes(next);
+     },
+-    [loadedRemId, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData]
++    [loadedRemId, ancestorTrees, descendantTrees, collapsedNodes, propertyData, interfaceData, directPropertyData]
+   );
