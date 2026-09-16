@@ -3,20 +3,23 @@ export type CollapsibleHierarchyNode = {
   children?: CollapsibleHierarchyNode[];
 };
 
-/** Collapse first-sphere parent and child rem nodes (forest roots with further hierarchy). */
+function collapseHierarchy(
+  collapsed: Set<string>,
+  nodes: CollapsibleHierarchyNode[]
+): void {
+  for (const node of nodes) {
+    if (node.children?.length) {
+      collapsed.add(node.id);
+      collapseHierarchy(collapsed, node.children);
+    }
+  }
+}
+
 export function makeDefaultView(
   collapsed: Set<string>,
   ancestors: CollapsibleHierarchyNode[],
   descendants: CollapsibleHierarchyNode[]
 ): void {
-  for (const node of ancestors) {
-    if (node.children?.length) {
-      collapsed.add(node.id);
-    }
-  }
-  for (const node of descendants) {
-    if (node.children?.length) {
-      collapsed.add(node.id);
-    }
-  }
+  collapseHierarchy(collapsed, ancestors);
+  collapseHierarchy(collapsed, descendants);
 }
