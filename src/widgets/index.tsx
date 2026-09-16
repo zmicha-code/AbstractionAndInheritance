@@ -14,7 +14,8 @@ import { specialTags, specialNames, highlightColorMap, DEFAULT_NODE_COLOR, FOCUS
    formatIfLayerConcept,
    isLayerConcept,
    getAllChildren,
-   getAncestorLineage
+   getAncestorLineage,
+   getExtendsParents
 } from "../utils/utils";
 
 import '../style.css';
@@ -83,33 +84,36 @@ async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
 async function handleExtrudeCommand(plugin: ReactRNPlugin): Promise<void> {
   const focusedRem = await plugin.focus.getFocusedRem();
   if (!focusedRem) {
-    await plugin.app.toast('No Rem is currently selected.');
+    await plugin.app.toast("No Rem is currently selected.");
     return;
   }
 
-  // Check if the focused Rem is referencing another Rem
-  const referencedRems = await focusedRem.remsBeingReferenced();
-  if (referencedRems.length === 0) {
-    await plugin.app.toast('The selected Rem does not reference any other Rem.');
+  const parents = await getExtendsParents(plugin, focusedRem);
+  if (parents.length === 0) {
+    await plugin.app.toast("Selected Rem has no extends parent.");
     return;
   }
 
-  // Assuming the focused Rem references only one Rem
-  const targetRem = referencedRems[0];
+  const parentRem = parents[0];
 
-  // Get all Rems that reference the focused Rem
   const referencingRems = await focusedRem.remsReferencingThis();
   if (referencingRems.length === 0) {
-    await plugin.app.toast('No Rems are referencing the selected Rem.');
+    await plugin.app.toast("No Rems are referencing the selected Rem.");
     return;
   }
 
-  // Update each referencing Rem to reference the target Rem
-  for (const refRem of referencingRems) {
-    await setRemToReference(plugin, targetRem, focusedRem, refRem);
+  let updatedCount = 0;
+  for (const referencingRem of referencingRems) {
+    if (referencingRem._id === focusedRem._id || referencingRem._id === parentRem._id) {
+      continue;
+    }
+    await setRemToReference(plugin, parentRem, focusedRem, referencingRem);
+    updatedCount++;
   }
 
-  await plugin.app.toast(`Updated ${referencingRems.length} Rems to reference the target Rem.`);
+  await plugin.app.toast(
+    `Updated ${updatedCount} Rems to reference the extends parent.`
+  );
 }
 
 async function isAncestor2(plugin: RNPlugin, ancestor: PluginRem, rem: PluginRem): Promise<boolean> {
