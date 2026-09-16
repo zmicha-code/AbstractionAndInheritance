@@ -2,20 +2,23 @@
 
 `src/widgets/mindmap_widget.tsx` is being split so individual files stay small enough to commit directly.
 
-## Layout
+## Present on main
 
-- `types.ts` — shared types
-- `timeout.ts` — load timeout helpers
-- `constants.ts` — spacing, handles, colors, width helpers
-- `cache.ts` — load context and Rem caches
-- `flowNodes.tsx` — React Flow node components
-- `hierarchy.ts` — ancestor/descendant trees
-- `remLayout.ts` — rem forest layout
-- `attributeData.ts` — property/interface data
-- `attributeLayout.ts` — attribute node layout
-- `virtualData.ts` — virtual attribute computation
-- `virtualLayout.ts` — virtual attribute layout
-- `graph.ts` — graph assembly
-- `state.ts` — persisted widget state
+- `types.ts`
+- `timeout.ts`
+- `constants.ts`
+- `cache.ts`
+- `state.ts`
+- `flowNodes.tsx`
+- `hierarchy.ts`
+- `remLayout.ts`
+- `attributeData.ts`
+- `virtualData.ts`
+- `graph.ts`
 
-The widget file should only keep React state, event handlers, and JSX.
+## Still to add before the widget can drop duplicated code
+
+- `attributeLayout.ts`
+- `virtualLayout.ts`
+
+After those two files exist, replace everything in `mindmap_widget.tsx` before `function MindmapWidget()` with imports from `src/mindmap/`.
