@@ -23,6 +23,15 @@ import {
   estimateNodeWidth,
 } from "./constants";
 
+function sortRemSiblings(children: HierarchyNode[]): HierarchyNode[] {
+  return [...children].sort((a, b) => {
+    const aExported = a.isExported ? 1 : 0;
+    const bExported = b.isExported ? 1 : 0;
+    if (aExported !== bExported) return bExported - aExported;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 export function measureSubtreeHeight(
   node: HierarchyNode,
   cache: Map<string, number>,
@@ -36,14 +45,21 @@ export function measureSubtreeHeight(
   if (cache.has(node.id)) return cache.get(node.id)!;
   let baseHeight = 1;
   if (!(collapsed.has(node.id) || !node.children?.length)) {
+    const ordered = sortRemSiblings(node.children);
     let total = 0;
-    for (let i = 0; i < node.children.length; i++) {
-      const child = node.children[i];
-      const childHeight = measureSubtreeHeight(child, cache, collapsed, attributeData, hiddenAttributes, kind, virtualAttributeData, hiddenVirtualAttributes);
+    for (let i = 0; i < ordered.length; i++) {
+      const childHeight = measureSubtreeHeight(
+        ordered[i],
+        cache,
+        collapsed,
+        attributeData,
+        hiddenAttributes,
+        kind,
+        virtualAttributeData,
+        hiddenVirtualAttributes
+      );
       total += childHeight;
-      if (i < node.children.length - 1) {
-        total += REM_CHILD_GAP_UNITS;
-      }
+      if (i < ordered.length - 1) total += REM_CHILD_GAP_UNITS;
     }
     baseHeight = Math.max(1, total);
   }
@@ -61,7 +77,8 @@ export function measureSubtreeHeight(
       : virtualAttrs;
     virtualAttributeHeight = visibleVirtual.length * (ATTRIBUTE_VERTICAL_SPACING / REM_UNIT_HEIGHT_PX);
   }
-  const totalAttributeHeight = (attributeHeight + virtualAttributeHeight) * ATTRIBUTE_HEIGHT_SPACING_FACTOR + ATTRIBUTE_HEIGHT_SPACING_OFFSET;
+  const totalAttributeHeight =
+    (attributeHeight + virtualAttributeHeight) * ATTRIBUTE_HEIGHT_SPACING_FACTOR + ATTRIBUTE_HEIGHT_SPACING_OFFSET;
   const result = baseHeight + totalAttributeHeight;
   cache.set(node.id, result);
   return result;
@@ -204,12 +221,27 @@ export function layoutChildrenHorizontal(
   hiddenVirtualAttributes?: Set<string>
 ): void {
   if (children.length === 0) return;
+
+  const ordered = sortRemSiblings(children);
   const parentUnit = parentNode.position.y / REM_UNIT_HEIGHT_PX;
-  const heights = children.map((child) => measureSubtreeHeight(child, heightCache, collapsed, attributeData, hiddenAttributes, kind, virtualAttributeData, hiddenVirtualAttributes));
-  const totalUnits = heights.reduce((sum, h) => sum + h, 0) + Math.max(0, children.length - 1) * REM_CHILD_GAP_UNITS;
+  const heights = ordered.map((child) =>
+    measureSubtreeHeight(
+      child,
+      heightCache,
+      collapsed,
+      attributeData,
+      hiddenAttributes,
+      kind,
+      virtualAttributeData,
+      hiddenVirtualAttributes
+    )
+  );
+  const totalUnits =
+    heights.reduce((sum, h) => sum + h, 0) + Math.max(0, ordered.length - 1) * REM_CHILD_GAP_UNITS;
   let currentUnit = parentUnit - totalUnits / 2;
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i];
+
+  for (let i = 0; i < ordered.length; i++) {
+    const child = ordered[i];
     const childUnits = heights[i];
     const childCenterUnit = currentUnit + childUnits / 2;
     layoutSubtreeHorizontal(
@@ -231,9 +263,7 @@ export function layoutChildrenHorizontal(
       hiddenVirtualAttributes
     );
     currentUnit += childUnits;
-    if (i < children.length - 1) {
-      currentUnit += REM_CHILD_GAP_UNITS;
-    }
+    if (i < ordered.length - 1) currentUnit += REM_CHILD_GAP_UNITS;
   }
 }
 
